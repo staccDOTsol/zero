@@ -103,16 +103,15 @@ jobs:
       - name: Verify (every model's sha256 read back from the image; first boot in QEMU/KVM)
         run: |
           set +e
-          sudo golden/linux/verify.sh "$WORK/zero.img" "$TIER" "$WORK/verify"
-          echo "VERIFY_RC=$?" >> "$GITHUB_ENV"
+          sudo golden/linux/verify.sh "$WORK/zero.img" "$TIER" "$WORK/verify"; RC=$?
           { echo "### $TIER: golden image verification"; echo '```'; cat "$WORK/verify/verify-report.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Stream to S3 (raw sha256 + zstd)
+          exit $RC
+      - name: Stream to S3 (raw sha256 + zstd), only a verified image
         if: inputs.upload
         working-directory: ${{ env.WORK }}
         run: |
           set -euo pipefail
           P="linux/$BASE_TAG"; V=PASS
-          if [ "$VERIFY_RC" != 0 ]; then P="$P/failed-verification"; V=FAIL; fi
           KEY="$P/zero-$TIER-linux.img.zst"
           SIZE=$(stat -c%s zero.img)
           SRCREPO=$BASE_REPO; [ "$BASE_REPO" = s3 ] && SRCREPO=staccDOTsol/lecore-plus
@@ -136,8 +135,6 @@ jobs:
           aws s3 cp manifest.json "s3://$BUCKET/$P/zero-$TIER-linux.manifest.json" --only-show-errors
           aws s3 cp verify/verify-report.txt "s3://$BUCKET/$P/zero-$TIER-linux.verify.txt" --only-show-errors
           aws s3 ls "s3://$BUCKET/$P/" --human-readable
-      - name: Result
-        run: '[ "$VERIFY_RC" = 0 ] || { echo "::error::first-boot verification failed"; exit 1; }'
       - name: Logs
         if: always()
         uses: actions/upload-artifact@v4

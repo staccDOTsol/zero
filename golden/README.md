@@ -104,8 +104,8 @@ first-boot task, per-machine state removed), sysprep → the models into the NTF
      and service cgroups cannot reach 1.1.1.1 while root can; Windows: the six containment rules,
      leCore's `python.exe` and the `llama-server.exe` path cannot reach pypi.org while the OS can; the
      chat refuses a DNS-rebinding Host.
-   An image whose verification fails is still uploaded, under `.../failed-verification/`, so it can
-   be inspected without a rebuild; the job fails.
+   An image whose verification fails is not uploaded; the job fails and its logs (serial console of
+   the test boot, screenshots, reports) are kept as the run's artifact.
 
 **Not verified by the build** (no hardware): the GPU path (the VM has no GPU, so the model runs on the
 CPU; check `Vulkan0` in the llama-server log on the first laptop of each model), Windows activation
@@ -119,7 +119,6 @@ s3://zero-golden-images-143795940981/
   base/linux/<tag>/...           base/windows/<tag>/...        staged base releases
   linux/<linux tag>/zero-<tier>-linux.img.zst  .manifest.json  .verify.txt
   windows/<windows tag>/zero-<tier>-windows.img.zst  .manifest.json  .verify.txt
-  */failed-verification/...      images whose first-boot check failed
 ```
 
 The bucket is private (public access blocked, bucket-owner-enforced, SSE-S3), tagged

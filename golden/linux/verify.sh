@@ -41,7 +41,8 @@ umount "$MNT"; losetup -d "$LOOP"; LOOP=""
 # ---- 2. first boot ---------------------------------------------------------------------------------------
 SD=$OUT/golden-disk; rm -rf "$SD"; mkdir -p "$SD"
 cp "$HERE/guest.sh" "$SD/"
-python3 - "$REPO/golden/lib/catalog.py" "$CATALOG" "$TIER" "$NVME" "$SB" "$SD/expect.json" <<'PY'
+golden_disk() { # SECUREBOOT(0|1): the test disk with guest.sh and what it must find
+python3 - "$REPO/golden/lib/catalog.py" "$CATALOG" "$TIER" "$NVME" "$1" "$SD/expect.json" <<'PY'
 import json, subprocess, sys
 tool, cat, tier, nvme, sb, out = sys.argv[1:7]
 s = json.loads(subprocess.check_output([sys.executable, tool, "--catalog", cat, "summary", tier]))
@@ -53,6 +54,7 @@ json.dump({"tier": tier, "disk_bytes": int(nvme), "secure_boot": sb == "1", "def
            "default_file": s["default_file"], "models": s["models"], "files": files}, open(out, "w"), indent=1)
 PY
 rm -f "$OUT/golden-disk.img"; mkfs.ext4 -q -L ZEROGOLD -d "$SD" "$OUT/golden-disk.img" 64M
+}
 UNIT=$(base64 -w0 <<'EOF'
 [Unit]
 Description=Zero golden image first-boot check - injected by the build through a VM credential, not part of the image
@@ -66,39 +68,59 @@ EOF
 )
 DROPIN=$(printf '[Unit]\nWants=zero-golden-check.service\n' | base64 -w0)
 OV=$OUT/first-boot.qcow2
-qemu-img create -q -f qcow2 -F raw -b "$IMG" "$OV" "$NVME"
-if [ "$SB" = 1 ]; then
-  CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd; cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$OUT/vars.fd"
-  MACHINE=q35,accel=kvm,smm=on; EXTRA=(-global driver=cfi.pflash01,property=secure,value=on)
-else
-  CODE=/usr/share/OVMF/OVMF_CODE_4M.fd; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/vars.fd"
-  MACHINE=q35,accel=kvm; EXTRA=()
-fi
-LOG=$OUT/first-boot-serial.log; SOCK=$OUT/qmp.sock; rm -f "$LOG" "$SOCK"
+LOG=$OUT/first-boot-serial.log; SOCK=$OUT/qmp.sock
+HOSTMEM=$(free -g | awk '/Mem:/{print $2}')
+boot() { # SMP MEM_G SECUREBOOT(0|1) -> 0 done, 1 failed, 2 the VM died before the check started
+  local smp=$1 mem=$2 sb=$3 code machine extra=() rc=1 t0 pid
+  rm -f "$OV" "$LOG" "$SOCK"
+  golden_disk "$sb"
+  qemu-img create -q -f qcow2 -F raw -b "$IMG" "$OV" "$NVME"
+  if [ "$sb" = 1 ]; then
+    code=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd; cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$OUT/vars.fd"
+    machine=q35,accel=kvm,smm=on; extra=(-global driver=cfi.pflash01,property=secure,value=on -global mch.extended-tseg-mbytes=64)
+  else
+    code=/usr/share/OVMF/OVMF_CODE_4M.fd; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/vars.fd"
+    machine=q35,accel=kvm
+  fi
+  BOOTCFG="first boot: QEMU/KVM + OVMF, ${NVME}-byte NVMe, Secure Boot $([ "$sb" = 1 ] && echo on || echo off), $smp vCPU / $mem GiB, user-mode network"
+  say "$BOOTCFG"
+  qemu-system-x86_64 -name zero-golden-linux -machine "$machine" -cpu host -smp "$smp" -m "${mem}G" "${extra[@]}" \
+    -drive if=pflash,format=raw,unit=0,readonly=on,file="$code" -drive if=pflash,format=raw,unit=1,file="$OUT/vars.fd" \
+    -drive file="$OV",if=none,id=d0,format=qcow2,cache=unsafe -device nvme,drive=d0,serial=ZEROGOLDEN0001 \
+    -drive file="$OUT/golden-disk.img",if=virtio,format=raw,readonly=on \
+    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -device virtio-rng-pci -device virtio-vga -display none \
+    -serial file:"$LOG" -qmp unix:"$SOCK",server=on,wait=off \
+    -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.zero-golden-check.service=$UNIT" \
+    -smbios "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.graphical.target=$DROPIN" \
+    -no-reboot 2> "$OUT/qemu-stderr.log" &
+  pid=$!; t0=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    if grep -aq ZERO_GOLDEN_DONE "$LOG" 2>/dev/null; then sleep 40; kill -0 "$pid" 2>/dev/null && kill "$pid"; rc=0; break; fi
+    if [ $((SECONDS - t0)) -ge 900 ] && ! grep -aq ZERO_GOLDEN_STARTED "$LOG" 2>/dev/null; then say "the check never started (15 min)"; kill "$pid"; break; fi
+    if [ $((SECONDS - t0)) -ge 7200 ]; then say "TIMEOUT"; kill "$pid"; break; fi
+    sleep 5
+  done
+  wait "$pid" 2>/dev/null || true
+  cat "$OUT/qemu-stderr.log" 2>/dev/null
+  if [ "$rc" != 0 ] && ! grep -aq ZERO_GOLDEN_STARTED "$LOG" 2>/dev/null && [ $((SECONDS - t0)) -lt 300 ]; then
+    say "the VM stopped after $((SECONDS - t0)) s, before the check started; serial tail:"
+    tail -c 2000 "$LOG" | tr -d '\r' | sed 's/\x1b\[[0-9;=]*[A-Za-z]//g' | tail -n 15
+    rc=2
+  fi
+  return "$rc"
+}
+# as the laptop ships first; if that VM dies during firmware/boot (seen with OVMF+SMM on large nested
+# guests), a smaller VM with Secure Boot, then Secure Boot off. The report says which one ran.
 SMP=$(nproc); [ "$SMP" -gt 32 ] && SMP=32
-MEM=$(( $(free -g | awk '/Mem:/{print $2}') * 6 / 10 )); [ "$MEM" -gt 96 ] && MEM=96
-say "first boot of the image: ${NVME}-byte NVMe, Secure Boot $([ "$SB" = 1 ] && echo on || echo off), $SMP vCPU / $MEM GiB, user-mode network"
-qemu-system-x86_64 -name zero-golden-linux -machine "$MACHINE" -cpu host -smp "$SMP" -m "${MEM}G" "${EXTRA[@]}" \
-  -drive if=pflash,format=raw,unit=0,readonly=on,file="$CODE" -drive if=pflash,format=raw,unit=1,file="$OUT/vars.fd" \
-  -drive file="$OV",if=none,id=d0,format=qcow2,cache=unsafe -device nvme,drive=d0,serial=ZEROGOLDEN0001 \
-  -drive file="$OUT/golden-disk.img",if=virtio,format=raw,readonly=on \
-  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -device virtio-rng-pci -device virtio-vga -display none \
-  -serial file:"$LOG" -qmp unix:"$SOCK",server=on,wait=off \
-  -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.zero-golden-check.service=$UNIT" \
-  -smbios "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.graphical.target=$DROPIN" \
-  -no-reboot &
-PID=$! T0=$SECONDS
-while kill -0 "$PID" 2>/dev/null; do
-  if grep -aq ZERO_GOLDEN_DONE "$LOG" 2>/dev/null; then sleep 40; kill -0 "$PID" 2>/dev/null && kill "$PID"; break; fi
-  if [ $((SECONDS - T0)) -ge 900 ] && ! grep -aq ZERO_GOLDEN_STARTED "$LOG" 2>/dev/null; then say "the check never started (15 min)"; kill "$PID"; RC=1; break; fi
-  if [ $((SECONDS - T0)) -ge 7200 ]; then say "TIMEOUT"; kill "$PID"; RC=1; break; fi
-  sleep 5
-done
-wait "$PID" 2>/dev/null || true
+MEM=$(( HOSTMEM * 6 / 10 )); [ "$MEM" -gt 96 ] && MEM=96
+BRC=2
+boot "$SMP" "$MEM" "$SB" && BRC=0 || BRC=$?
+if [ "$BRC" = 2 ] && [ "$SB" = 1 ]; then boot 16 64 1 && BRC=0 || BRC=$?; fi
+if [ "$BRC" = 2 ]; then say "retrying with Secure Boot off"; boot "$SMP" "$MEM" 0 && BRC=0 || BRC=$?; fi
 rm -f "$OV" "$OUT/vars.fd" "$SOCK"
 sed -n '/ZERO GOLDEN IMAGE FIRST BOOT/,$p' "$LOG" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' > "$OUT/first-boot.txt"
 cat "$OUT/first-boot.txt"
-{ grep -aE '^(VERIFY OK|VERIFY FAILED)' "$OUT/models-sha256.txt"; grep -aE 'GOLDEN (PASS|FAIL|WARN)|ZERO_GOLDEN_RESULT' "$OUT/first-boot.txt"; } > "$OUT/verify-report.txt" || true
+{ grep -aE '^(VERIFY OK|VERIFY FAILED)' "$OUT/models-sha256.txt"; echo "${BOOTCFG:-first boot: not run}"; grep -aE 'GOLDEN (PASS|FAIL|WARN)|ZERO_GOLDEN_RESULT' "$OUT/first-boot.txt"; } > "$OUT/verify-report.txt" || true
 grep -q 'ZERO_GOLDEN_RESULT: PASS' "$OUT/first-boot.txt" || RC=1
 say "verification: $([ "$RC" = 0 ] && echo PASS || echo FAIL)"
 exit "$RC"

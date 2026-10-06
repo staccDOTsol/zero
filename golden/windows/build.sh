@@ -359,8 +359,9 @@ say "first-boot verification: $VERIFY"
 
 # ---------------------------------------------------------------------------------------------------
 # 6. upload
+[ "$VERIFY" = PASS ] || die "first-boot verification failed (logs/verify-report.txt); the image is not uploaded"
 if [ "$UPLOAD" = 1 ]; then
-  P=${PREFIX%/}; [ "$VERIFY" = PASS ] || P=$P/failed-verification
+  P=${PREFIX%/}
   KEY=$P/zero-$TIER-windows.img.zst
   say "streaming to s3://$BUCKET/$KEY (raw sha256 + zstd)"
   aws configure set default.s3.max_concurrent_requests 32
@@ -386,5 +387,4 @@ PY
   cat "$WORK/manifest.json"
 fi
 [ "$KEEP" = 1 ] || rm -f "$DISK"
-[ "$VERIFY" = PASS ] || die "first-boot verification failed (image kept under failed-verification/ for inspection)"
 say "done"
