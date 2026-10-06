@@ -133,16 +133,22 @@ try {
 } catch { Check 'llama-server /v1/chat/completions answers' $false $_.Exception.Message }
 
 # 6. chat -> model rung ---------------------------------------------------------------------------
-$viaModel = $null
+# Evidence that the chat on :7860 reached the model on :8080: llama-server processes new tasks while the
+# chat answers a question its memory cannot, and the answer is not a memory/engine answer. (At the pinned
+# leCore commit an answer from the model rung via the ladder comes back with provenance null or
+# "model-cached".)
+function Get-LlamaTasks { ([regex]::Matches((Tail (Join-Path $logs 'lecore-llama.out.log') 5000), 'launch_slot_')).Count }
+$memoryProv = @('engine', 'taught', 'validated', 'evidenced', 'semantic-recall', 'docs', 'workspace', 'escalated')
+$viaModel = $null; $tasksUsed = 0
 foreach ($q in 'Write one short sentence about a lighthouse keeper named Brindle.', 'Invent a name for a purple teapot dragon.', 'Describe the taste of a zorbleberry in five words.') {
+    $before = Get-LlamaTasks
     try { $r = Post-Json 'http://127.0.0.1:7860/api/chat' @{ message = $q; workspace = 'default' } 300 } catch { $r = $null }
-    if ($r -and $r.provenance -eq 'model-cached') { $viaModel = $r; break }
-    Write-Host ("  not via model: provenance={0} text={1}" -f $(if ($r) { $r.provenance } else { 'error' }), $(if ($r) { $r.text } else { '' }))
+    $used = (Get-LlamaTasks) - $before
+    $prov = if ($r) { [string]$r.provenance } else { 'error' }
+    Write-Host ("  q='{0}' -> llama tasks +{1}, provenance='{2}', text={3}" -f $q, $used, $prov, $(if ($r) { $r.text } else { '' }))
+    if ($r -and $r.text -and $used -ge 1 -and $memoryProv -notcontains $prov) { $viaModel = $r; $tasksUsed = $used; break }
 }
-$llamaLog = Tail (Join-Path $logs 'lecore-llama.out.log') 400
-$served = ([regex]::Matches($llamaLog, 'POST /v1/chat/completions')).Count
-Check 'chat on :7860 escalates to the model on :8080 (provenance model-cached)' ($null -ne $viaModel) $(if ($viaModel) { "text=$($viaModel.text)" } else { 'no model-cached answer' })
-Check 'llama-server log shows chat completions served' ($served -ge 1) "$served POST /v1/chat/completions lines"
+Check 'chat on :7860 answers through the model on :8080' ($null -ne $viaModel) $(if ($viaModel) { "llama-server ran $tasksUsed task(s) for the chat; provenance='$($viaModel.provenance)'; text=$($viaModel.text)" } else { 'no model-backed answer' })
 
 # 7. egress guard --------------------------------------------------------------------------------
 $guard = Join-Path $logs 'egress-guard.log'
