@@ -44,6 +44,11 @@ function Post-Json([string]$Url, $Body, [int]$Timeout = 300) {
     $json = $Body | ConvertTo-Json -Depth 5 -Compress
     Invoke-RestMethod -Method Post -Uri $Url -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec $Timeout
 }
+function Invoke-Quiet([scriptblock]$Block) {
+    # Windows PowerShell 5.1 turns a native command's stderr into terminating errors under 'Stop' when redirected.
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { & $Block 2>&1 | ForEach-Object { "$_" } } finally { $ErrorActionPreference = $old }
+}
 function Tail([string]$Path, [int]$N = 40) { if (Test-Path -LiteralPath $Path) { (Get-Content -LiteralPath $Path -Tail $N) -join "`n" } else { "(no $Path)" } }
 
 $data = Join-Path $env:ProgramData 'leCore+'
@@ -69,7 +74,7 @@ $llamaSvc = Get-Service lecore-llama -ErrorAction SilentlyContinue
 Check 'install.ps1 -SkipLockdown -TestMode (offline payload, no pip downloads)' ($installOk -and $chatSvc -and $llamaSvc) `
     ("{0:N0}s; services: lecore-chat={1}, lecore-llama={2}; account={3}" -f $sw.Elapsed.TotalSeconds,
         $(if ($chatSvc) { $chatSvc.Status } else { 'missing' }), $(if ($llamaSvc) { $llamaSvc.Status } else { 'missing' }),
-        ((Get-CimInstance Win32_Service -Filter "Name='lecore-chat'").StartName))
+        $(if ($chatSvc) { (Get-CimInstance Win32_Service -Filter "Name='lecore-chat'").StartName } else { '-' }))
 $pyv = & (Join-Path $root 'python\python.exe') -X utf8 -c "import sys, numpy, flask, matplotlib, nltk; print(sys.version.split()[0], 'numpy', numpy.__version__, 'flask', flask.__version__, 'nltk', nltk.__version__)"
 Check 'embedded Python + wheels importable' ($LASTEXITCODE -eq 0) "$pyv"
 $nl = & (Join-Path $root 'python\python.exe') -X utf8 -c "import os; os.environ['NLTK_DATA']=r'$root\nltk_data'; import nltk; print(nltk.download('gutenberg'), nltk.download('not-a-real-package', quiet=True)); from nltk.corpus import gutenberg; print(len(gutenberg.fileids()))"
@@ -117,7 +122,7 @@ if (Test-Path $realCat) {
 Start-Service lecore-llama
 $models = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
 Check 'llama-server /v1/models answers' ($models -and $models.Content -match [regex]::Escape([IO.Path]::GetFileNameWithoutExtension($tm.path))) $(if ($models) { $models.Content.Substring(0, [Math]::Min(300, $models.Content.Length)) } else { Tail (Join-Path $logs 'lecore-llama.out.log') 30 })
-$dev = & (Join-Path $root 'llama\llama-server.exe') --list-devices 2>&1 | Out-String
+$dev = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices } | Out-String
 Check 'llama.cpp devices on this runner (informational)' $true (($dev -split "`n" | Where-Object { $_ -match 'Vulkan|device|CPU|load_backend' }) -join ' / ')
 try {
     $cc = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 24; messages = @(@{ role = 'user'; content = 'Say hello.' }) } 120
@@ -142,14 +147,15 @@ $chatLog = Tail (Join-Path $logs 'lecore-chat.out.log') 400
 Check 'chat process made no non-loopback connection or DNS lookup' ((-not (Test-Path $guard) -or -not (Get-Content $guard)) -and $chatLog -match 'egress guard ON') $(if (Test-Path $guard) { Tail $guard 10 } else { 'egress-guard.log empty; guard was ON' })
 
 # 8. lockdown -WhatIf -----------------------------------------------------------------------------
-$lk = & (Join-Path $root 'setup\lockdown.ps1') -WhatIf -InstallBootTask 6>&1 4>&1 3>&1 2>&1 | Out-String
-$lkOk = $?
-$whatIfs = ([regex]::Matches($lk, 'What if:')).Count
+$lkOk = $true
+try { $lk = & (Join-Path $root 'setup\lockdown.ps1') -WhatIf -InstallBootTask 6>&1 3>&1 | Out-String }
+catch { $lkOk = $false; $lk = "lockdown -WhatIf threw: $($_.Exception.Message)" }
+$whatIfs = ([regex]::Matches($lk, '\[lockdown\] WHATIF ')).Count
 $fwAfter = (Get-NetFirewallProfile | Sort-Object Name | ForEach-Object { "$($_.Name):$($_.Enabled):$($_.DefaultOutboundAction)" }) -join ' '
 $rulesAfter = @(Get-NetFirewallRule -Direction Outbound -Enabled True -ErrorAction SilentlyContinue).Count
-Check 'lockdown.ps1 -WhatIf runs clean' ($lkOk -and $whatIfs -gt 100) "$whatIfs 'What if' actions"
+Check 'lockdown.ps1 -WhatIf runs clean' ($lkOk -and $whatIfs -gt 100) ("$whatIfs planned actions; " + (($lk -split "`n" | Where-Object { $_ -match 'results:' }) -join ' '))
 Check 'lockdown -WhatIf changed nothing on the runner' ($fwBefore -eq $fwAfter -and $rulesBefore -eq $rulesAfter -and -not (Get-NetFirewallRule -Name 'LecorePlus-ZeroEgress-Block' -ErrorAction SilentlyContinue)) "firewall before=[$fwBefore] after=[$fwAfter]; enabled outbound rules $rulesBefore -> $rulesAfter"
-$guardMsg = try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '$root\setup\lockdown.ps1' -FirewallOnly -WhatIf:`$false" 2>&1 | Out-String } catch { $_.Exception.Message }
+$guardMsg = Invoke-Quiet { & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '$root\setup\lockdown.ps1' -FirewallOnly -WhatIf:`$false" } | Out-String
 Check 'lockdown refuses to run for real on a CI runner' ($guardMsg -match 'Refusing to apply the zero-egress lockdown') (($guardMsg -split "`n" | Select-Object -First 2) -join ' ')
 $lk | Set-Content -LiteralPath (Join-Path (Split-Path $Report) 'lockdown-whatif.txt') -Encoding utf8
 

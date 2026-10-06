@@ -529,6 +529,9 @@ try {
 
 $failed = @($script:Results | Where-Object { $_.Status -eq 'FAILED' })
 $counts = $script:Results | Group-Object Status | ForEach-Object { "$($_.Name)=$($_.Count)" }
+if ($DryRun) {
+    foreach ($r in $script:Results) { Say ("WHATIF {0} | {1} | {2}" -f $r.Area, $r.Item, $r.Detail) }
+}
 Say ("results: " + ($counts -join ', '))
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null

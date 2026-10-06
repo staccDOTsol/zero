@@ -33,7 +33,9 @@ if ($Resolve) {
     $url = $null; $last = ''
     for ($i = 1; $i -le $Attempts -and -not $url; $i++) {
         Write-Host "  attempt $i/$Attempts"
-        $out = & $ps -NoProfile -ExecutionPolicy Bypass -File $fido -Win 11 -Rel Latest -Ed Pro -Lang '^English$' -Arch x64 -GetUrl 2>&1 | Out-String
+        $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        $out = & $ps -NoProfile -ExecutionPolicy Bypass -File $fido -Win 11 -Rel Latest -Ed Pro -Lang '^English$' -Arch x64 -GetUrl 2>&1 | ForEach-Object { "$_" } | Out-String
+        $ErrorActionPreference = $old
         $m = [regex]::Match($out, 'https://\S+')
         if ($m.Success) { $url = $m.Value.Trim() } else {
             $last = $out.Trim()

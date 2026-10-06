@@ -199,10 +199,13 @@ try {
         Say 'wheels from the local wheelhouse (pip --no-index; no network)'
         $wheelhouse = Join-Path $payload 'wheelhouse'
         $pipWheel = (Get-ChildItem $wheelhouse -Filter 'pip-*.whl' | Select-Object -First 1).FullName
+        # pip itself runs from its wheel and is not installed into the target (pip refuses to "modify pip").
+        $req = Join-Path $env:TEMP 'lecore-plus-requirements.txt'
+        Get-Content -LiteralPath (Join-Path $wheelhouse 'requirements.lock.txt') | Where-Object { $_ -notmatch '^pip==' } |
+            Set-Content -LiteralPath $req -Encoding ascii
         $pipArgs = @('-X', 'utf8', (Join-Path $pipWheel 'pip'), 'install', '--no-index', '--find-links', $wheelhouse,
                      '--require-hashes', '--only-binary=:all:', '--disable-pip-version-check', '--no-cache-dir',
-                     '--no-warn-script-location', '--target', (Join-Path $pyDir 'Lib\site-packages'),
-                     '-r', (Join-Path $wheelhouse 'requirements.lock.txt'))
+                     '--no-warn-script-location', '--target', (Join-Path $pyDir 'Lib\site-packages'), '-r', $req)
         & $python @pipArgs
         if ($LASTEXITCODE -ne 0) { throw "offline pip install failed ($LASTEXITCODE)" }
 
@@ -313,7 +316,8 @@ try {
     if (-not $NoStart) {
         Say 'starting services'
         Start-Service -Name 'lecore-chat'
-        Start-Service -Name 'lecore-llama'   # exits cleanly (service stops) when no model is configured
+        # With no model configured the launcher exits 0 at once and the service stops cleanly.
+        try { Start-Service -Name 'lecore-llama' } catch { Say "lecore-llama: $($_.Exception.Message)" }
     }
 
     if ($SkipLockdown) {
