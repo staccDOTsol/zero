@@ -91,8 +91,8 @@ dkms status
   find /var/lib/dkms -name make.log -exec tail -n 60 {} \; ; exit 1; }
 modinfo -F license "$NVKO" | grep -q 'Dual MIT/GPL' || { echo "FATAL: $NVKO is not the open module"; exit 1; }
 modinfo "$NVKO" | grep -E '^(filename|version|license|vermagic|signer|sig_key):' || true
-# DKMS signed the modules with a key it generated here. That private key must not ship (it would be the
-# same on every laptop). Remove it; zero-nvidia-secureboot makes a per-machine key (see linux/README.md).
+# DKMS does not sign in a chroot. If it ever made a signing key here, that private key must not ship (it
+# would be the same on every laptop): remove it. zero-nvidia-secureboot makes a per-machine key.
 rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
 
 # ------------------------------------------------------------------------------------------------
@@ -101,10 +101,11 @@ fwcheck() { # module regex -> lists the firmware files the module declares that 
   local mod=$1 re=$2 miss=0 n=0 f
   for f in $(modinfo -k "$KVER" -F firmware "$mod" 2>/dev/null | grep -E "$re" | sort -u); do
     n=$((n + 1))
-    if ls /lib/firmware/"$f"* >/dev/null 2>&1; then echo "  ok      $f"; else echo "  MISSING $f"; miss=$((miss + 1)); fi
+    if compgen -G "/lib/firmware/${f}*" >/dev/null; then echo "  ok      $f"; else echo "  MISSING $f"; miss=$((miss + 1)); fi
   done
   echo "  $mod [$re]: $n declared, $miss missing"
-  return "$miss"
+  [ "$n" -gt 0 ] || return 99
+  [ "$miss" = 0 ]
 }
 echo "AMD Strix Halo (gfx1151 = GC 11.5.1):"
 fwcheck amdgpu '11_5_1' || { echo "FATAL: gfx1151 firmware missing"; exit 1; }
@@ -140,7 +141,7 @@ for d in $LECORE_DROP_REQUIREMENTS; do sed -i -E "/^[[:space:]]*${d}([[:space:]]
 echo "requirements installed:"; grep -vE '^\s*(#|$)' "$REQ"
 CONSTRAINT=()
 [ -f /tmp/zero-build/lecore-requirements.lock ] && CONSTRAINT=(-c /tmp/zero-build/lecore-requirements.lock)
-/opt/lecore-plus/venv/bin/pip install --no-cache-dir --disable-pip-version-check --upgrade pip
+/opt/lecore-plus/venv/bin/pip install --no-cache-dir --disable-pip-version-check --upgrade "pip==26.2.1"
 /opt/lecore-plus/venv/bin/pip install --no-cache-dir --disable-pip-version-check -r "$REQ" "${CONSTRAINT[@]}"
 /opt/lecore-plus/venv/bin/pip freeze --all > /usr/share/lecore-plus/venv-freeze.txt
 cat /usr/share/lecore-plus/venv-freeze.txt

@@ -138,6 +138,8 @@ for p in $NLTK_PACKAGES; do
   (cd "$d" && python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall('.')" "$(basename "$p").zip")
 done
 
+chown -R root:root "$R/opt/lecore-plus" "$R/usr/share/nltk_data"
+chmod -R u+rwX,go+rX,go-w "$R/opt/lecore-plus" "$R/usr/share/nltk_data"
 cp "$DL/$NVIDIA_KEYRING_DEB" "$R/tmp/zero-build/"
 cp -a "$HERE/overlay" "$R/tmp/zero-build/overlay"
 cp "$HERE/chroot-setup.sh" "$R/tmp/zero-build/"
@@ -189,9 +191,24 @@ cp "$R/usr/share/lecore-plus/packages.txt" "$OUT/packages.txt"
 log "Unmounting and checking file systems"
 rm -f "$R/etc/resolv.conf"
 sync
+# stop anything still running inside the target (gpg-agent, dirmngr, ...)
+for p in /proc/[0-9]*; do
+  [ "$(readlink "$p/root" 2>/dev/null)" = "$R" ] && { echo "killing leftover $(cat "$p/comm") (${p#/proc/})"; kill -9 "${p#/proc/}" 2>/dev/null || true; }
+done
 for m in run dev sys proc boot/efi; do umount -R "$R/$m" || umount -Rl "$R/$m"; done
 umount "$R"
-e2fsck -f -y "$ROOT_DEV" || [ $? -le 1 ] || die "e2fsck failed"
+udevadm settle || true
+ok=0
+for i in $(seq 1 12); do
+  rc=0; e2fsck -f -y "$ROOT_DEV" || rc=$?
+  if [ "$rc" -le 1 ]; then ok=1; break; fi
+  echo "e2fsck returned $rc; who holds $ROOT_DEV:"
+  grep -l "$(basename "$ROOT_DEV")" /proc/[0-9]*/mountinfo 2>/dev/null | head -n 5 | while read -r f; do
+    pid=$(echo "$f" | cut -d/ -f3); echo "  mounted in namespace of pid $pid ($(cat /proc/$pid/comm 2>/dev/null))"; done
+  fuser -vm "$ROOT_DEV" 2>&1 | head -n 5 || true
+  sleep 5
+done
+[ "$ok" = 1 ] || die "e2fsck failed"
 fsck.vfat -a "$ESP_DEV" || true
 losetup -d "$LOOP"; LOOP=""
 sgdisk -v "$IMG"

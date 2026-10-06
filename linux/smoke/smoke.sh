@@ -26,7 +26,8 @@ grep PRETTY_NAME /etc/os-release; uname -a
 cat /usr/share/lecore-plus/versions.txt 2>/dev/null
 echo "secure boot: $(mokutil --sb-state 2>&1 | tr '\n' ' ')"
 echo "lockdown:    $(cat /sys/kernel/security/lockdown 2>/dev/null)"
-echo "boot state:  $(timeout 300 systemctl is-system-running --wait 2>&1)"
+echo "boot state:  $(systemctl is-system-running 2>&1) (this test is itself part of the boot transaction)"
+systemctl list-jobs --no-pager | head -n 15
 systemctl --no-pager --failed
 systemd-analyze 2>/dev/null | head -n 1
 
@@ -120,7 +121,7 @@ nmcli device set "$IF" managed no 2>/dev/null || true
 ip link set "$IF" up; ip addr flush dev "$IF"; ip addr add 10.0.2.15/24 dev "$IF"; ip route replace default via 10.0.2.2
 ip -br addr
 echo "--- with the zero-egress rules loaded:"
-OUT=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' https://1.1.1.1/ 2>&1); echo "curl https://1.1.1.1 -> $OUT"
+OUT=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 -> $OUT"
 case "$OUT" in 2*|3*|4*) bad "outbound HTTPS succeeded with the firewall on" ;; *) BLOCKED=1 ;; esac
 OUT2=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://10.0.2.2/ 2>&1); echo "curl http://10.0.2.2 (gateway) -> $OUT2"
 getent ahosts example.com >/dev/null 2>&1 && bad "DNS resolution worked" || echo "DNS: no resolution (expected)"
@@ -129,9 +130,9 @@ zero-egress status
 echo "--- control: firewall removed for 10 seconds to prove the path exists"
 nft list ruleset > /tmp/rules.saved
 nft delete table inet zero_egress
-OUT3=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' https://1.1.1.1/ 2>&1); echo "curl https://1.1.1.1 (firewall off) -> $OUT3"
+OUT3=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall off) -> $OUT3"
 nft -f /etc/nftables.conf
-OUT4=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' https://1.1.1.1/ 2>&1); echo "curl https://1.1.1.1 (firewall restored) -> $OUT4"
+OUT4=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall restored) -> $OUT4"
 case "$OUT3" in
   2*|3*|4*) [ "${BLOCKED:-0}" = 1 ] && case "$OUT4" in 2*|3*|4*) bad "egress open after restore" ;; *) ok "egress blocked by the firewall (control without it reached 1.1.1.1: HTTP $OUT3)" ;; esac ;;
   *) warn "control failed (no internet from the CI VM?); blocked result inconclusive: $OUT / $OUT3" ;;
