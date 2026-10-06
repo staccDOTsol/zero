@@ -132,7 +132,25 @@ try {
     Check 'llama-server /v1/chat/completions answers' ([bool]$cc.choices[0].message.content) ("{0}" -f $cc.choices[0].message.content)
 } catch { Check 'llama-server /v1/chat/completions answers' $false $_.Exception.Message }
 
-# 5b. the Vulkan backend on a software Vulkan device (CI only; never shipped) ----------------------
+# 6. chat -> model rung ---------------------------------------------------------------------------
+# Evidence that the chat on :7860 reached the model on :8080: llama-server processes new tasks while the
+# chat answers a question its memory cannot, and the answer is not a memory/engine answer. (At the pinned
+# leCore commit an answer from the model rung via the ladder comes back with provenance null or
+# "model-cached".)
+function Get-LlamaTasks { ([regex]::Matches((Tail (Join-Path $logs 'lecore-llama.out.log') 5000), 'launch_slot_')).Count }
+$memoryProv = @('engine', 'taught', 'validated', 'evidenced', 'semantic-recall', 'docs', 'workspace', 'escalated')
+$viaModel = $null; $tasksUsed = 0
+foreach ($q in 'Write one short sentence about a lighthouse keeper named Brindle.', 'Invent a name for a purple teapot dragon.', 'Describe the taste of a zorbleberry in five words.') {
+    $before = Get-LlamaTasks
+    try { $r = Post-Json 'http://127.0.0.1:7860/api/chat' @{ message = $q; workspace = 'default' } 300 } catch { $r = $null }
+    $used = (Get-LlamaTasks) - $before
+    $prov = if ($r) { [string]$r.provenance } else { 'error' }
+    Write-Host ("  q='{0}' -> llama tasks +{1}, provenance='{2}', text={3}" -f $q, $used, $prov, $(if ($r) { $r.text } else { '' }))
+    if ($r -and $r.text -and $used -ge 1 -and $memoryProv -notcontains $prov) { $viaModel = $r; $tasksUsed = $used; break }
+}
+Check 'chat on :7860 answers through the model on :8080' ($null -ne $viaModel) $(if ($viaModel) { "llama-server ran $tasksUsed task(s) for the chat; provenance='$($viaModel.provenance)'; text=$($viaModel.text)" } else { 'no model-backed answer' })
+
+# 6b. the Vulkan backend on a software Vulkan device (CI only; never shipped) ----------------------
 # The runner has no GPU. Install the Khronos loader + Mesa lavapipe, restart the model service (it runs as
 # LOCAL SERVICE in session 0, like on the laptop) and check llama.cpp's Vulkan backend loads the device
 # and runs the model on it.
@@ -170,32 +188,17 @@ try {
         [IO.File]::WriteAllText($xmlPath, ($x -replace '</service>', "  <env name=`"GGML_VK_VISIBLE_DEVICES`" value=`"0`"/>`r`n</service>"), (New-Object Text.UTF8Encoding($false)))
     }
     Check 'llama.cpp Vulkan backend sees a Vulkan device (Mesa lavapipe, CI only)' ($devs -match 'Vulkan\d') (($devs -split "`n" | Where-Object { $_ -match 'Vulkan|llvmpipe' }) -join ' / ')
+    # CI only: debug log level (one argument per line in llama-args.txt) so the log names the device.
+    [IO.File]::WriteAllLines((Join-Path $data 'llama-args.txt'), [string[]]@('-lv', '4'))
     $mark = (Get-Content (Join-Path $logs 'lecore-llama.out.log')).Count
     Restart-Service lecore-llama
     $null = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
-    $cc2 = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 16; messages = @(@{ role = 'user'; content = 'Say hi.' }) } 300
+    $cc2 = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 8; messages = @(@{ role = 'user'; content = 'Say hi.' }) } 600
     $since = (Get-Content (Join-Path $logs 'lecore-llama.out.log') | Select-Object -Skip $mark) -join "`n"
-    $vkLines = ($since -split "`n" | Where-Object { $_ -match 'Vulkan|llvmpipe|offload' } | Select-Object -First 6) -join ' / '
-    Check 'model service runs the model on the Vulkan device (as LOCAL SERVICE)' ([bool]$cc2.choices[0].message.content -and $since -match 'Vulkan0|llvmpipe') ("answer: {0} | log: {1}" -f $cc2.choices[0].message.content, $vkLines)
+    $vkLines = ($since -split "`n" | Where-Object { $_ -match 'Vulkan0|llvmpipe|offload' } | Select-Object -First 8) -join ' / '
+    Remove-Item -Force (Join-Path $data 'llama-args.txt')
+    Check 'model service runs the model on the Vulkan device (as LOCAL SERVICE)' ([bool]$cc2.choices[0].message.content -and $since -match 'Vulkan0') ("answer: {0} | log: {1}" -f $cc2.choices[0].message.content, $vkLines)
 } catch { Check 'llama.cpp Vulkan backend on a software Vulkan device (CI only)' $false $_.Exception.Message }
-
-# 6. chat -> model rung ---------------------------------------------------------------------------
-# Evidence that the chat on :7860 reached the model on :8080: llama-server processes new tasks while the
-# chat answers a question its memory cannot, and the answer is not a memory/engine answer. (At the pinned
-# leCore commit an answer from the model rung via the ladder comes back with provenance null or
-# "model-cached".)
-function Get-LlamaTasks { ([regex]::Matches((Tail (Join-Path $logs 'lecore-llama.out.log') 5000), 'launch_slot_')).Count }
-$memoryProv = @('engine', 'taught', 'validated', 'evidenced', 'semantic-recall', 'docs', 'workspace', 'escalated')
-$viaModel = $null; $tasksUsed = 0
-foreach ($q in 'Write one short sentence about a lighthouse keeper named Brindle.', 'Invent a name for a purple teapot dragon.', 'Describe the taste of a zorbleberry in five words.') {
-    $before = Get-LlamaTasks
-    try { $r = Post-Json 'http://127.0.0.1:7860/api/chat' @{ message = $q; workspace = 'default' } 300 } catch { $r = $null }
-    $used = (Get-LlamaTasks) - $before
-    $prov = if ($r) { [string]$r.provenance } else { 'error' }
-    Write-Host ("  q='{0}' -> llama tasks +{1}, provenance='{2}', text={3}" -f $q, $used, $prov, $(if ($r) { $r.text } else { '' }))
-    if ($r -and $r.text -and $used -ge 1 -and $memoryProv -notcontains $prov) { $viaModel = $r; $tasksUsed = $used; break }
-}
-Check 'chat on :7860 answers through the model on :8080' ($null -ne $viaModel) $(if ($viaModel) { "llama-server ran $tasksUsed task(s) for the chat; provenance='$($viaModel.provenance)'; text=$($viaModel.text)" } else { 'no model-backed answer' })
 
 # 7. egress guard --------------------------------------------------------------------------------
 $guard = Join-Path $logs 'egress-guard.log'
