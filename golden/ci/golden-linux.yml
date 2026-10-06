@@ -34,30 +34,13 @@ jobs:
           nproc; free -g; df -h; ls -l /dev/kvm
           sudo apt-get update -qq
           sudo apt-get install -y -qq zstd gdisk cloud-guest-utils e2fsprogs aria2 qemu-system-x86 qemu-utils ovmf >/dev/null
+          sudo chmod 666 /dev/kvm || true
           command -v aws && aws --version
       - name: Work dir on the big disk
         run: |
           BIG=$(df --output=avail,target -B1 -x tmpfs -x devtmpfs | tail -n +2 | sort -n | tail -1 | awk '{print $2}')
           echo "WORK=$BIG/zero-work" >> "$GITHUB_ENV"; sudo mkdir -p "$BIG/zero-work"; sudo chown "$USER" "$BIG/zero-work"
           df -h "$BIG"
-      - name: Models, in parallel (aria2c, sha256-checked) into the provisioner's cache
-        run: |
-          set -euo pipefail
-          mkdir -p "$WORK/model-cache"
-          python3 golden/lib/catalog.py aria2 "$TIER" "$WORK/model-cache" --provision-layout > "$WORK/aria2.list"
-          for attempt in 1 2 3; do
-            aria2c -i "$WORK/aria2.list" -j 6 -x 16 -s 16 -k 64M --file-allocation=falloc -c \
-              --auto-file-renaming=false --allow-overwrite=true --check-integrity=true \
-              --max-tries=20 --retry-wait=10 --connect-timeout=30 --timeout=120 \
-              --summary-interval=300 --console-log-level=warn --download-result=hide && break
-            [ "$attempt" = 3 ] && exit 1; sleep 20
-          done
-          # provision/linux-add-models.sh trusts a cache file whose <file>.sha256 holds the catalog sha256
-          # and is newer than the file (aria2c has just checked every sha256)
-          python3 golden/lib/catalog.py plan "$TIER" | while IFS=$'\t' read -r _ repo path _ _ sha _; do
-            echo "$sha" > "$WORK/model-cache/$repo/$path.sha256"
-          done
-          du -sh "$WORK/model-cache"
       - name: Base image
         working-directory: ${{ env.WORK }}
         run: |
@@ -71,12 +54,50 @@ jobs:
           grep -E '\.part[0-9]+$' SHA256SUMS | sha256sum -c -
           cat zero-*.img.zst.part* | zstd -d -o zero.img && rm -f zero-*.img.zst.part*
           ls -l zero.img
-      - name: Every model for the tier, into the image (provision/linux-add-models.sh, copies re-hashed)
+      - name: Grow the image to hold the tier, mount its root
         run: |
-          sudo -E provision/linux-add-models.sh --all "$TIER" \
-            --image "$WORK/zero.img" --cache "$WORK/model-cache"
-          sudo rm -rf "$WORK/model-cache"
-          ls -l "$WORK/zero.img"; df -h "$WORK"
+          set -euo pipefail
+          GIB=1073741824
+          MB=$(python3 golden/lib/catalog.py summary "$TIER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bytes"])')
+          NEW=$(( ($(stat -c %s "$WORK/zero.img") + MB + 4 * GIB + GIB - 1) / GIB * GIB ))
+          truncate -s "$NEW" "$WORK/zero.img"
+          sgdisk -e "$WORK/zero.img" >/dev/null
+          LOOP=$(sudo losetup -f --show -P "$WORK/zero.img"); sudo udevadm settle || sleep 2
+          ROOT=$(lsblk -lnpo NAME,PARTLABEL "$LOOP" | awk '$2=="zero-root"{print $1}')
+          sudo growpart "$LOOP" "${ROOT##*p}" || [ $? = 1 ]
+          sudo e2fsck -f -y "$ROOT" || [ $? -le 1 ]
+          sudo resize2fs "$ROOT"
+          sudo mkdir -p "$WORK/root" && sudo mount "$ROOT" "$WORK/root"
+          echo "LOOP=$LOOP" >> "$GITHUB_ENV"
+          df -h "$WORK/root" "$WORK"
+      - name: Every model for the tier, downloaded straight into the image (aria2c, parallel, sha256 per file)
+        run: |
+          set -euo pipefail
+          C="$WORK/root/var/lib/lecore-plus/.golden-download"
+          sudo mkdir -p "$C" && sudo chown "$USER" "$C"
+          python3 golden/lib/catalog.py aria2 "$TIER" "$C" --provision-layout > "$WORK/aria2.list"
+          for attempt in 1 2 3; do
+            aria2c -i "$WORK/aria2.list" -j 6 -x 16 -s 16 -k 64M --file-allocation=falloc -c \
+              --auto-file-renaming=false --allow-overwrite=true --check-integrity=true \
+              --max-tries=20 --retry-wait=10 --connect-timeout=30 --timeout=120 \
+              --summary-interval=300 --console-log-level=warn --download-result=hide && break
+            [ "$attempt" = 3 ] && exit 1; sleep 20
+          done
+          # provision/linux-add-models.sh trusts a cache file whose <file>.sha256 holds the catalog sha256
+          # and is newer than the file (aria2c has just checked every sha256)
+          python3 golden/lib/catalog.py plan "$TIER" | while IFS=$'\t' read -r _ repo path _ _ sha _; do
+            echo "$sha" > "$C/$repo/$path.sha256"
+          done
+          du -sh "$C"; df -h "$WORK"
+      - name: Into place with provision/linux-add-models.sh (moved within the image, zero-models.json, default model)
+        run: |
+          set -euo pipefail
+          C="$WORK/root/var/lib/lecore-plus/.golden-download"
+          sudo -E provision/linux-add-models.sh --all "$TIER" --target "$WORK/root" --cache "$C" --move --no-verify-target
+          sudo rm -rf "$C"
+          sudo umount "$WORK/root"; sudo e2fsck -fn "$(lsblk -lnpo NAME,PARTLABEL "$LOOP" | awk '$2=="zero-root"{print $1}')"
+          sudo losetup -d "$LOOP"
+          ls -ls "$WORK/zero.img"; df -h "$WORK"
       - name: Verify (every model's sha256 read back from the image; first boot in QEMU/KVM)
         run: |
           set +e

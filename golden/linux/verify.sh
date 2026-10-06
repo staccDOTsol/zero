@@ -75,8 +75,10 @@ else
   MACHINE=q35,accel=kvm; EXTRA=()
 fi
 LOG=$OUT/first-boot-serial.log; SOCK=$OUT/qmp.sock; rm -f "$LOG" "$SOCK"
-say "first boot of the image: ${NVME}-byte NVMe, Secure Boot $([ "$SB" = 1 ] && echo on || echo off), 32 vCPU / 96 GiB, user-mode network"
-qemu-system-x86_64 -name zero-golden-linux -machine "$MACHINE" -cpu host -smp 32 -m 96G "${EXTRA[@]}" \
+SMP=$(nproc); [ "$SMP" -gt 32 ] && SMP=32
+MEM=$(( $(free -g | awk '/Mem:/{print $2}') * 6 / 10 )); [ "$MEM" -gt 96 ] && MEM=96
+say "first boot of the image: ${NVME}-byte NVMe, Secure Boot $([ "$SB" = 1 ] && echo on || echo off), $SMP vCPU / $MEM GiB, user-mode network"
+qemu-system-x86_64 -name zero-golden-linux -machine "$MACHINE" -cpu host -smp "$SMP" -m "${MEM}G" "${EXTRA[@]}" \
   -drive if=pflash,format=raw,unit=0,readonly=on,file="$CODE" -drive if=pflash,format=raw,unit=1,file="$OUT/vars.fd" \
   -drive file="$OV",if=none,id=d0,format=qcow2,cache=unsafe -device nvme,drive=d0,serial=ZEROGOLDEN0001 \
   -drive file="$OUT/golden-disk.img",if=virtio,format=raw,readonly=on \
