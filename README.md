@@ -24,9 +24,21 @@ Install layout:
 
 ## Zero egress
 
-- Linux: nftables `output` policy `drop`, loopback allowed. No apt timers, no NTP, no telemetry.
-- Windows: Windows Firewall `DefaultOutboundAction Block` on every profile, loopback allowed;
-  Windows Update, telemetry and Store services disabled.
+- Linux: the OS networks normally (nftables `output` policy `accept`; DHCP, NTP, apt, the browser).
+  llama-server and leCore's chat run as their own users `lecore-llama` / `lecore-chat` with systemd
+  `IPAddressDeny=any` + `IPAddressAllow=localhost`, plus nftables `meta skuid <uid> oifname != "lo" drop`
+  for both users; both units `Requires=nftables.service` (fail closed). Both listen on 127.0.0.1 only.
+  llama-server runs `--offline` without its web UI and needs a per-machine API key (generated at first
+  boot, and again when `/etc/machine-id` changes, into `/etc/lecore-plus/llama-api-key`,
+  `root:lecore-api 0640`); the chat answers only `Host: 127.0.0.1:7860` / `localhost:7860`.
+- Windows: the OS networks normally (Windows Firewall on, `DefaultOutboundAction Allow`). Outbound and
+  inbound Block rules for every non-loopback address apply to exactly
+  `C:\Program Files\leCore+\llama\llama-server.exe` and leCore's embedded
+  `C:\Program Files\leCore+\python\python.exe` / `pythonw.exe`, re-applied at every boot. Both listen
+  on 127.0.0.1 only. llama-server runs `--offline --no-webui --cors-origins localhost` and needs a
+  per-machine API key (`--api-key-file C:\ProgramData\leCore+\secret\llama-api-key`, readable only by
+  the two Zero services, SYSTEM and Administrators); the chat answers only `Host: 127.0.0.1:7860` /
+  `localhost:7860`.
 
 ## Models are not baked into the image
 

@@ -124,7 +124,7 @@ before shipping (edit `model.txt`, `Restart-Service lecore-llama`, then
 
 | | Service (WinSW wrapper, `NT AUTHORITY\LocalService`) | Listens | Path |
 |---|---|---|---|
-| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model> --offline --no-webui --cors-origins localhost` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
+| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model> --offline --no-webui --cors-origins localhost --api-key-file …` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
 | Zero chat | `lecore-chat` → `lecore_plus_chat.py` → leCore `chat_server.py` | 127.0.0.1:7860 | `C:\Program Files\leCore+\lecore\` (leCore `21abb4f`, MIT) on Python 3.13.16 embeddable |
 
 - Both are automatic services with restart-on-failure. No model configured → `lecore-llama` is a clean
@@ -155,6 +155,7 @@ again in the specialize pass; the firewall part re-asserted at every boot by the
 | Firewall, per program | Windows Firewall on, **DefaultOutboundAction Allow** on Domain/Private/Public. Outbound **and** inbound Block rules for every non-loopback address (everything except 127.0.0.0/8 and ::1) on exactly `C:\Program Files\leCore+\llama\llama-server.exe` and leCore's embedded `C:\Program Files\leCore+\python\python.exe` / `pythonw.exe` | The guarantee. Block rules beat allow rules. Any other Python, Edge, Windows Update etc. network normally. |
 | Loopback only | `llama-server --host 127.0.0.1`; the chat binds `127.0.0.1:7860` | Nothing on the LAN can talk to them. |
 | llama.cpp | `--offline` (never downloads), `--no-webui` (no built-in web UI; Zero's UI is the chat), `--cors-origins localhost` (no web page from elsewhere can read answers) | llama.cpp has no telemetry; these close its remote-fetch paths. |
+| Per-machine API key on :8080 | `install.ps1` generates 256 random bits on each laptop (Windows Setup's specialize pass) into `C:\ProgramData\leCore+\secret\llama-api-key`, readable only by the two Zero services (service SIDs `NT SERVICE\lecore-llama` / `NT SERVICE\lecore-chat`), SYSTEM and Administrators. llama-server reads it with `--api-key-file` (the key is not on the command line); every request except `/health` needs `Authorization: Bearer <key>`; the chat's rung sends it. Without the file llama-server is not started | Loopback is not a trust boundary with a browser on the machine: a web page can point its own name at 127.0.0.1 (DNS rebinding). Your own tools: `$k = Get-Content 'C:\ProgramData\leCore+\secret\llama-api-key'` (elevated), header `Authorization: Bearer $k`. |
 | leCore chat | Host allow-list (`127.0.0.1:7860`, `localhost:7860`) against DNS rebinding; cross-site POSTs refused; `Content-Security-Policy` so the chat page loads and sends nothing outside 127.0.0.1 (model text such as `<img src=https://…>` cannot leak) | The browser is online, so the chat must not answer other sites. |
 | leCore Python | NLTK corpora pre-staged, `nltk.download()` is an offline no-op; Hugging Face libraries offline | leCore has no telemetry; these are its only automatic downloads. |
 | Crash dumps | Windows Error Reporting excludes `llama-server.exe`, `python.exe`, `pythonw.exe` | A dump is the process memory, i.e. prompts and answers. |
@@ -212,7 +213,8 @@ pushes to `windows/**` run the stack build and the smoke test. Each image job: A
 
 The CI smoke test installs the stack on the runner without the machine-policy part of the lockdown,
 starts both services, provisions a tiny test GGUF (never shipped) through `windows-add-models.ps1`,
-checks `/v1/models` and a chat answer that comes from the model, then applies the per-program firewall
+checks `/v1/models`, that :8080 answers 401 without the per-machine key and with a wrong one, and a
+chat answer that comes from the model, then applies the per-program firewall
 part for real and proves: general outbound and another Python still reach the internet; leCore's
 `python.exe` and the `llama-server.exe` path cannot (loopback still works); both listen on 127.0.0.1
 only; the chat refuses rebinding / cross-site requests. It also runs the shipped Vulkan build of

@@ -1,0 +1,13 @@
+# Zero: per-machine API key for llama-server (127.0.0.1:8080). See /usr/local/sbin/zero-llama-key.
+[Unit]
+Description=Zero: per-machine API key for the local model server
+After=local-fs.target systemd-machine-id-commit.service
+Before=lecore-llama.service lecore-chat.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/zero-llama-key
+
+[Install]
+WantedBy=multi-user.target

@@ -15,7 +15,12 @@ This launcher does exactly that and nothing more:
   * honours the chat's Settings dialog: if the user picks another back end there, the rung defers to it;
   * gives leCore a writable memory partition ($LECORE_PARTITION), seeded once from leCore's shipped
     release_bundle (what lecore._core_memory_home() does for a pip install);
-  * serves the page with the window title "Zero".
+  * serves the page with the window title "Zero";
+  * sends the per-machine llama-server API key ($LECORE_LLM_KEY_FILE, written by zero-llama-key.service)
+    as the rung's Bearer token, read on every call;
+  * refuses requests whose Host header is not 127.0.0.1:7860 / localhost:7860 (DNS rebinding) and
+    cross-site POSTs, and sends a Content-Security-Policy that keeps the page on 127.0.0.1, so no web
+    page the browser opens can read the chat's answers or memory.
 """
 import os
 import shutil
@@ -39,8 +44,30 @@ RUNG_NAME = "llama.cpp"
 URL = os.environ.get("LECORE_LLM_URL", "").strip()
 
 
+KEY_FILE = os.environ.get("LECORE_LLM_KEY_FILE", "").strip()
+PORT = 7860
+ALLOWED_HOSTS = {"127.0.0.1:%d" % PORT, "localhost:%d" % PORT, "[::1]:%d" % PORT}
+ALLOWED_ORIGINS = {"http://" + h for h in ALLOWED_HOSTS}
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+       "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'self' data: blob:; "
+       "object-src 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'")
+
+
+def api_key():
+    """The per-machine llama-server key, or None (then llama-server answers 401 and the chat stays memory-only)."""
+    if not KEY_FILE:
+        return None
+    try:
+        with open(KEY_FILE, encoding="ascii") as f:
+            return f.read().strip() or None
+    except OSError as e:
+        sys.stderr.write("zero: cannot read the model server key %s (%s)\n" % (KEY_FILE, e))
+        return None
+
+
 def make_rung(mind):
-    remote = remote_llm(url=URL, timeout=float(os.environ.get("LECORE_LLM_TIMEOUT", "600")))
+    timeout = float(os.environ.get("LECORE_LLM_TIMEOUT", "600"))
+    endpoint = remote_llm(url=URL).endpoint
 
     def rung(prompt, **kw):
         if cs.STATE.get("llm") != RUNG_NAME:          # Settings switched to another back end
@@ -49,14 +76,33 @@ def make_rung(mind):
                 return other(prompt)
             return ""
         try:
-            return remote(prompt, **kw)
+            return remote_llm(url=URL, api_key=api_key(), timeout=timeout)(prompt, **kw)
         except Exception as e:                        # llama-server not running: memory-only
             sys.stderr.write("zero: model rung unavailable, answering memory-only (%s)\n" % str(e)[:200])
             return ""
 
     rung.__name__ = "zero_llama_rung"
-    rung.endpoint = remote.endpoint
+    rung.endpoint = endpoint
     return rung
+
+
+def contain():
+    """Only this machine's own browser, addressing the chat as 127.0.0.1/localhost, is served."""
+    from flask import request, abort
+    if request.host.lower() not in ALLOWED_HOSTS:
+        abort(403)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("Origin")
+        if origin and origin.lower() not in ALLOWED_ORIGINS:
+            abort(403)
+
+
+def headers(resp):
+    resp.headers["Content-Security-Policy"] = CSP
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["X-Frame-Options"] = "DENY"
+    return resp
 
 
 def home():
@@ -67,6 +113,8 @@ def home():
 
 def main():
     cs.APP.view_functions["home"] = home
+    cs.APP.before_request(contain)
+    cs.APP.after_request(headers)
     mind = cs._mind()
     if URL:
         r = make_rung(mind)
@@ -77,7 +125,7 @@ def main():
     print("Zero chat (leCore %s) -> http://127.0.0.1:7860   model rung: %s"
           % (getattr(sys.modules.get("lecore"), "__version__", "?"),
              (URL + "/chat/completions") if URL else "none (memory only)"), flush=True)
-    cs.APP.run(host="127.0.0.1", port=7860, debug=False)
+    cs.APP.run(host="127.0.0.1", port=PORT, debug=False)
 
 
 if __name__ == "__main__":

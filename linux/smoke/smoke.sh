@@ -19,6 +19,8 @@ wait_http() { # url seconds
   return 1
 }
 chat() { curl -sS --max-time 900 -H 'Content-Type: application/json' -d "$(python3 -c 'import json,sys;print(json.dumps({"message":sys.argv[1]}))' "$1")" http://127.0.0.1:7860/api/chat; }
+KEYF=/etc/lecore-plus/llama-api-key
+AUTH() { echo "Authorization: Bearer $(cat "$KEYF" 2>/dev/null)"; }   # the per-machine llama-server key (root may read it)
 
 hdr "ZERO SMOKE TEST ($MODE)"
 echo "ZERO_SMOKE_STARTED $MODE"
@@ -120,6 +122,26 @@ if wait_http http://127.0.0.1:7860/ 300; then ok "lecore-chat answers HTTP on 12
 systemctl show lecore-chat.service -p ActiveState -p NRestarts
 curl -s http://127.0.0.1:7860/ | grep -o '<title>[^<]*</title>' | grep -q '<title>Zero</title>' && ok "page title is Zero" || bad "page title"
 curl -s http://127.0.0.1:7860/api/settings; echo
+H1=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: zero.attacker.example:7860' http://127.0.0.1:7860/api/settings)
+H2=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://attacker.example' -H 'Content-Type: text/plain' -d '{"message":"hi"}' http://127.0.0.1:7860/api/chat)
+H3=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost:7860' http://127.0.0.1:7860/api/settings)
+echo "chat: foreign Host -> $H1, foreign Origin POST -> $H2, Host localhost:7860 -> $H3"
+[ "$H1" = 403 ] && [ "$H2" = 403 ] && [ "$H3" = 200 ] && ok "chat refuses DNS-rebinding Host headers and cross-site POSTs (403); localhost works" \
+  || bad "chat Host/Origin checks: foreign Host $H1, foreign Origin $H2, localhost $H3"
+curl -s -D - -o /dev/null http://127.0.0.1:7860/ | grep -i '^content-security-policy:' | head -c 200; echo
+
+hdr "per-machine llama-server API key"
+systemctl show zero-llama-key.service -p Result -p ActiveState | tr '\n' ' '; echo
+journalctl -b -u zero-llama-key --no-pager -o cat | tail -n 3
+KS=$(stat -c '%U:%G %a %s' "$KEYF" 2>/dev/null); echo "$KEYF: $KS"
+[ "$KS" = "root:lecore-api 640 64" ] && grep -qx "$(cat /etc/machine-id)" /etc/lecore-plus/llama-api-key.machine-id \
+  && ok "API key generated at first boot for this machine-id (root:lecore-api 0640, 256 bits)" || bad "API key file: '$KS'"
+getent group lecore-api
+for u in lecore-llama lecore-chat; do
+  setpriv --reuid="$u" --regid="$u" --init-groups -- test -r "$KEYF" && ok "$u can read the key" || bad "$u cannot read the key"
+done
+setpriv --reuid=nobody --regid=nogroup --clear-groups -- test -r "$KEYF" && bad "nobody can read the key" || ok "other users cannot read the key"
+
 R=$(chat "what is lecore"); echo "chat> what is lecore"; echo "$R" | head -c 600; echo
 echo "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("text")' 2>/dev/null \
   && ok "chat answered from leCore memory$([ "$MODE" = full ] && echo ' (memory-only, no model running)')" || bad "chat did not answer"
@@ -160,8 +182,18 @@ case "$MODE" in
   sb)   echo "$ARGS" | grep -qE -- '-ngl 999 -m /var/lib/lecore-plus/models/[^ ]+ --cpu-moe' \
           && ok "offload build: launcher added --cpu-moe (and kept -ngl 999)" || bad "offload args missing: $ARGS" ;;
 esac
-curl -s http://127.0.0.1:8080/v1/models | head -c 400; echo
-CC=$(curl -s --max-time 300 -H 'Content-Type: application/json' \
+U1=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/models)
+U2=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4}' http://127.0.0.1:8080/v1/chat/completions)
+U3=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong-key' http://127.0.0.1:8080/v1/models)
+U4=$(curl -s -o /dev/null -w '%{http_code}' -H "$(AUTH)" http://127.0.0.1:8080/v1/models)
+echo "llama-server: no key /v1/models -> $U1, no key /v1/chat/completions -> $U2, wrong key -> $U3, right key -> $U4"
+[ "$U1" = 401 ] && [ "$U2" = 401 ] && [ "$U3" = 401 ] && [ "$U4" = 200 ] \
+  && ok "llama-server requires the per-machine API key (no key / wrong key -> 401, key -> 200)" \
+  || bad "llama-server API key: no key $U1/$U2, wrong $U3, right $U4"
+case "$ARGS" in *"$(cat "$KEYF" 2>/dev/null)"*) bad "the API key is visible on llama-server's command line" ;; *) ok "API key not on llama-server's command line (read from a file)" ;; esac
+curl -s -H "$(AUTH)" http://127.0.0.1:8080/v1/models | head -c 400; echo
+CC=$(curl -s --max-time 300 -H 'Content-Type: application/json' -H "$(AUTH)" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":24,"temperature":0}' \
   http://127.0.0.1:8080/v1/chat/completions)
 echo "$CC" | head -c 600; echo
@@ -170,13 +202,13 @@ echo "$CC" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["choi
 journalctl -b -u lecore-llama --no-pager -o cat | grep -iE 'vulkan|ggml_vk|device|backend|model|error' | head -n 25
 
 hdr "chat -> model rung (LECORE_LLM_URL)"
-T0=$(curl -s http://127.0.0.1:8080/slots | python3 -c 'import json,sys; print(sum(int(s.get("id_task",-1)) for s in json.load(sys.stdin)))' 2>/dev/null || echo x)
+T0=$(curl -s -H "$(AUTH)" http://127.0.0.1:8080/slots | python3 -c 'import json,sys; print(sum(int(s.get("id_task",-1)) for s in json.load(sys.stdin)))' 2>/dev/null || echo x)
 R=$(chat "Describe in one sentence how volcanoes on Io differ from those on Earth"); echo "$R" | head -c 600; echo
-T1=$(curl -s http://127.0.0.1:8080/slots | python3 -c 'import json,sys; print(sum(int(s.get("id_task",-1)) for s in json.load(sys.stdin)))' 2>/dev/null || echo y)
+T1=$(curl -s -H "$(AUTH)" http://127.0.0.1:8080/slots | python3 -c 'import json,sys; print(sum(int(s.get("id_task",-1)) for s in json.load(sys.stdin)))' 2>/dev/null || echo y)
 echo "llama slots task ids before/after: $T0 / $T1"
 PROV=$(echo "$R" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("provenance"))' 2>/dev/null)
 if [ "$PROV" = model-cached ] || { [ "$T0" != x ] && [ "$T0" != "$T1" ]; }; then
-  ok "chat escalated to llama-server through LECORE_LLM_URL (provenance $PROV)"
+  ok "chat escalated to llama-server through LECORE_LLM_URL with the API key (provenance $PROV)"
 else
   bad "chat did not reach the model (provenance $PROV, slots $T0 -> $T1)"
 fi

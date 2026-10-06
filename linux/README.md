@@ -158,6 +158,18 @@ system user under systemd, and each binds to 127.0.0.1 only:
   own firewall can coexist.
 - **Fail closed:** both units have `Requires=nftables.service`. If the rules do not load, the AI
   services do not start.
+- **Loopback is not a trust boundary on a laptop with a browser.** A web page can point its own host
+  name at 127.0.0.1 (DNS rebinding) and talk to local ports. So:
+  - **llama-server needs a per-machine API key.** `zero-llama-key.service` generates 256 random bits
+    at first boot into `/etc/lecore-plus/llama-api-key` (`root:lecore-api 0640`; only the
+    `lecore-llama` and `lecore-chat` users are in `lecore-api`) and again whenever `/etc/machine-id`
+    changes, so a cloned disk gets its own key. llama-server reads it with `LLAMA_ARG_API_KEY_FILE`
+    (not on the command line). Every request except `/health` needs `Authorization: Bearer <key>`.
+    The chat launcher sends it from `LECORE_LLM_KEY_FILE`. For your own tools:
+    `curl -H "Authorization: Bearer $(sudo cat /etc/lecore-plus/llama-api-key)" http://127.0.0.1:8080/v1/models`.
+  - **The chat answers only `Host: 127.0.0.1:7860` / `localhost:7860`** and refuses cross-site POSTs
+    (403). Its pages carry a Content-Security-Policy that keeps them on 127.0.0.1, so model output
+    such as `<img src=https://…>` cannot carry text off the machine.
 - **The Zero window.** Chromium shows model input and output. The enterprise policy
   `/etc/chromium/policies/managed/zero.json` turns off only the features that would send page or
   typed text to Google: Translate, the enhanced spell-check service, and the Help-me-write/Lens/
@@ -166,7 +178,8 @@ system user under systemd, and each binds to 127.0.0.1 only:
 
 Verified in CI (QEMU): as `lecore-llama` and as `lecore-chat`, `curl http://1.1.1.1` (and IPv6)
 fails while `curl http://127.0.0.1:7860` works. A root process moved into each service's cgroup is
-blocked too, and root outside them reaches the internet. See [Smoke test](#smoke-test-ci).
+blocked too, and root outside them reaches the internet. Requests to :8080 without the key, or with
+a wrong one, get 401; the chat still reaches the model; a foreign `Host:` header on :7860 gets 403. See [Smoke test](#smoke-test-ci).
 
 To check on a laptop: `sudo nft list table inet zero_egress` (the drop counters) and
 `systemctl show lecore-chat -p IPAddressDeny -p IPAddressAllow`.

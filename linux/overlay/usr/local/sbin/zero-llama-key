@@ -1,0 +1,27 @@
+#!/bin/sh
+# Zero: per-machine API key for the local model server (llama-server on 127.0.0.1:8080).
+# Run at every boot by zero-llama-key.service, before lecore-llama and lecore-chat. Creates
+# /etc/lecore-plus/llama-api-key (root:lecore-api 0640: readable only by the lecore-llama and
+# lecore-chat service users) when it is missing, or when this disk now runs on a different machine
+# (/etc/machine-id changed, e.g. a cloned golden image), so no two laptops share a key.
+# llama-server reads it with --api-key-file (LLAMA_ARG_API_KEY_FILE); the chat sends it as a Bearer
+# token. Without it, any web page a browser on this laptop opens could talk to 127.0.0.1:8080 through
+# DNS rebinding and read the model's answers.
+set -eu
+KEY=/etc/lecore-plus/llama-api-key
+STAMP=/etc/lecore-plus/llama-api-key.machine-id
+MID=$(cat /etc/machine-id 2>/dev/null || true)
+if [ -s "$KEY" ] && [ -n "$MID" ] && [ "$(cat "$STAMP" 2>/dev/null || true)" = "$MID" ]; then
+  chown root:lecore-api "$KEY"; chmod 0640 "$KEY"
+  echo "zero-llama-key: key present for this machine"
+  exit 0
+fi
+umask 077
+install -d -m 0755 /etc/lecore-plus
+TMP=$(mktemp /etc/lecore-plus/.llama-api-key.XXXXXX)
+od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$TMP"
+[ "$(wc -c < "$TMP")" -eq 64 ] || { rm -f "$TMP"; echo "zero-llama-key: could not read /dev/urandom" >&2; exit 1; }
+chown root:lecore-api "$TMP"; chmod 0640 "$TMP"
+mv -f "$TMP" "$KEY"
+printf '%s\n' "$MID" > "$STAMP"; chmod 0644 "$STAMP"
+echo "zero-llama-key: generated a new 256-bit key for machine-id ${MID:-unknown}"
