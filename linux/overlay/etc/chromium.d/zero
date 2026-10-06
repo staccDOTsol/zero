@@ -1,0 +1,3 @@
+# Zero: Chromium never contacts Google services or update servers (enterprise policy does the rest:
+# /etc/chromium/policies/managed/zero.json).
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-background-networking --disable-component-update --disable-domain-reliability --no-pings --disable-breakpad --disable-sync --no-default-browser-check --no-first-run"

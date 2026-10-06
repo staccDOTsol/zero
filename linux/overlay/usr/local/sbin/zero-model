@@ -1,0 +1,40 @@
+#!/bin/sh
+# Zero: list the preinstalled models and choose which one the local model server runs.
+#   zero-model list            installed models (* = current)
+#   zero-model use <id|file>   make it the default and restart the model server (root)
+set -eu
+MODELS=/var/lib/lecore-plus/models
+CONF=/etc/lecore-plus/model
+MANIFEST=$MODELS/zero-models.json
+current=$(head -n 1 "$CONF" 2>/dev/null || true)
+case "${1:-list}" in
+  list)
+    if [ -f "$MANIFEST" ]; then
+      python3 - "$MANIFEST" "$current" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); cur = sys.argv[2]
+print("tier: %s" % m.get("tier"))
+for e in m.get("models", []):
+    first = e["files"][0]["name"]
+    gb = sum(f["bytes"] for f in e["files"]) / 1e9
+    print("%s %-30s %6.1f GB  %-8s %s" % ("*" if first == cur else " ", e["id"], gb, e.get("speed") or "", e.get("name") or ""))
+PY
+    else
+      ls -1 "$MODELS" 2>/dev/null | grep -i '\.gguf$' | sed "s/^/  /" || echo "no models installed"
+    fi ;;
+  use)
+    [ "$(id -u)" = 0 ] || { echo "run as root: sudo zero-model use ${2:-<id>}" >&2; exit 1; }
+    want=${2:?usage: zero-model use <id|file>}
+    file=""
+    [ -f "$MODELS/$want" ] && file=$want
+    if [ -z "$file" ] && [ -f "$MANIFEST" ]; then
+      file=$(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1]))
+print(next((e["files"][0]["name"] for e in m.get("models",[]) if e["id"]==sys.argv[2]), ""))' "$MANIFEST" "$want")
+    fi
+    [ -n "$file" ] && [ -f "$MODELS/$file" ] || { echo "zero-model: '$want' is not installed" >&2; exit 1; }
+    printf '%s\n' "$file" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+    systemctl restart lecore-llama.service
+    echo "zero-model: now serving $file" ;;
+  *) echo "usage: zero-model list | zero-model use <id|file>" >&2; exit 2 ;;
+esac

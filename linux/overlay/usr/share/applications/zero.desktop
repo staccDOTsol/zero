@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Zero
+GenericName=Local AI assistant
+Comment=Chat with Zero. Everything runs on this laptop; nothing leaves it.
+Exec=/opt/lecore-plus/bin/zero-app
+Icon=zero
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=zero

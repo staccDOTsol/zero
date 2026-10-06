@@ -1,0 +1,33 @@
+#!/bin/sh
+# Zero Ultra: let the NVIDIA kernel modules load with UEFI Secure Boot ON.
+# The NVIDIA open modules are built by DKMS on the factory build host and are NOT signed by any key
+# your firmware trusts (the build key is discarded so no shared signing key ships). This script:
+#   1. creates a Machine Owner Key (MOK) unique to THIS laptop (/var/lib/dkms/mok.{key,pub}),
+#   2. rebuilds and signs the NVIDIA modules with it (dkms),
+#   3. queues the key for enrollment (mokutil asks you to choose a one-time password).
+# Then reboot: the blue "MOK management" screen appears -> Enroll MOK -> Continue -> enter the
+# password -> Reboot. The AMD laptops (Zero Pro/Max) need none of this.
+set -eu
+[ "$(id -u)" = 0 ] || { echo "run as root: sudo zero-nvidia-secureboot" >&2; exit 1; }
+KEY=/var/lib/dkms/mok.key
+PUB=/var/lib/dkms/mok.pub
+if [ ! -s "$KEY" ]; then
+  echo "Creating a per-machine module signing key..."
+  openssl req -new -x509 -newkey rsa:3072 -nodes -days 36500 -sha256 \
+    -subj "/CN=Zero $(cat /etc/machine-id | cut -c1-12) DKMS module signing key/" \
+    -keyout "$KEY" -outform DER -out "$PUB" 2>/dev/null
+  chmod 0600 "$KEY"
+fi
+KVER=$(uname -r)
+NV=$(dkms status nvidia 2>/dev/null | sed -n 's#^nvidia/\([^,: ]*\).*#\1#p' | head -n 1)
+[ -n "$NV" ] || { echo "NVIDIA DKMS module not found" >&2; exit 1; }
+echo "Rebuilding and signing nvidia/$NV for $KVER (takes a few minutes)..."
+dkms install --force "nvidia/$NV" -k "$KVER"
+mokutil --sb-state || true
+if mokutil --test-key "$PUB" 2>/dev/null | grep -q 'already enrolled'; then
+  echo "This key is already enrolled. The NVIDIA modules will load on the next boot."
+else
+  echo "Choose a one-time password; you will type it once after the reboot in MOK management."
+  mokutil --import "$PUB"
+  echo "Now reboot and complete 'Enroll MOK' on the blue screen."
+fi

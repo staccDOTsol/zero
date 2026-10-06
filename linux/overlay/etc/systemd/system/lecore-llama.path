@@ -1,0 +1,10 @@
+# Zero: start the model server as soon as a model is selected (e.g. after zero-models / provisioning).
+[Unit]
+Description=Zero: start the local model server when /etc/lecore-plus/model is written
+
+[Path]
+PathChanged=/etc/lecore-plus/model
+Unit=lecore-llama.service
+
+[Install]
+WantedBy=multi-user.target

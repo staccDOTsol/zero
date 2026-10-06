@@ -1,0 +1,33 @@
+#!/bin/sh
+# Zero: run llama-server on the model named in /etc/lecore-plus/model.
+#   lecore-llama-launch --check   exit 0 if a usable model is selected, 1 otherwise (ExecCondition)
+#   lecore-llama-launch           exec llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model>
+set -u
+CONF=/etc/lecore-plus/model
+MODELS=/var/lib/lecore-plus/models
+LLAMA=/opt/lecore-plus/llama
+
+name=$(head -n 1 "$CONF" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+check() {
+  if [ -z "$name" ]; then echo "lecore-llama: no model selected ($CONF missing or empty)" >&2; return 1; fi
+  case "$name" in
+    */*|.*) echo "lecore-llama: '$name' in $CONF is not a plain file name in $MODELS" >&2; return 1 ;;
+  esac
+  if [ ! -r "$MODELS/$name" ]; then echo "lecore-llama: model file $MODELS/$name not found" >&2; return 1; fi
+  return 0
+}
+if [ "${1:-}" = "--check" ]; then check; exit $?; fi
+check || exit 1
+
+# Give the GPU driver a moment to publish its device nodes at boot (otherwise llama.cpp silently
+# falls back to the CPU). AMD/Intel: /dev/dri/renderD*, NVIDIA: /dev/nvidia0.
+i=0
+while [ "$i" -lt 30 ]; do
+  ls /dev/dri/renderD* >/dev/null 2>&1 && break
+  [ -e /dev/nvidia0 ] && break
+  sleep 1; i=$((i + 1))
+done
+
+export LD_LIBRARY_PATH="$LLAMA${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# shellcheck disable=SC2086  # LLAMA_EXTRA_ARGS is a word list on purpose (see /etc/lecore-plus/llama.env)
+exec "$LLAMA/llama-server" --host 127.0.0.1 --port 8080 -ngl 999 -m "$MODELS/$name" ${LLAMA_EXTRA_ARGS:-}

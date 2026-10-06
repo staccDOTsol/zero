@@ -1,0 +1,17 @@
+#!/bin/sh
+# Zero: write a modprobe config that lets GPU drivers map most of system RAM.
+#   gpu-memory-conf OUTFILE
+# The kernel's default TTM limit is 50% of RAM. On the Zero Pro/Max (AMD Strix Halo, unified memory)
+# the iGPU's model memory lives in that pool, so a 64 GB machine could only load ~32 GB of model.
+# We allow 85% (override: ZERO_GPU_MEMORY_PERCENT). Values are 4 KiB pages.
+out=${1:?usage: gpu-memory-conf OUTFILE}
+pct=${ZERO_GPU_MEMORY_PERCENT:-85}
+kb=0
+while read -r key val _; do
+  [ "$key" = "MemTotal:" ] && { kb=$val; break; }
+done < /proc/meminfo
+[ "$kb" -gt 0 ] 2>/dev/null || exit 0
+pages=$(( kb / 4 * pct / 100 ))
+mkdir -p "$(dirname "$out")"
+printf '# Zero: GPU-mappable system memory = %s%% of %s KiB RAM\noptions ttm pages_limit=%s page_pool_size=%s\n' \
+  "$pct" "$kb" "$pages" "$pages" > "$out"

@@ -1,0 +1,52 @@
+# Zero: leCore chat (leCore's chat_server.py) on 127.0.0.1:7860, model rung -> llama-server.
+# Works memory-only when no model server is running: the rung then returns no answer and leCore
+# escalates honestly, exactly as with no model attached.
+[Unit]
+Description=Zero chat (leCore chat_server) on 127.0.0.1:7860
+After=local-fs.target nftables.service lecore-llama.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=lecore
+Group=lecore
+StateDirectory=lecore-plus/chat
+WorkingDirectory=/var/lib/lecore-plus/chat
+Environment=LECORE_LLM_URL=http://127.0.0.1:8080/v1
+Environment=LECORE_PARTITION=/var/lib/lecore-plus/chat/memory
+Environment=PYTHONHASHSEED=0
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/lecore-plus/chat
+Environment=MPLCONFIGDIR=/var/lib/lecore-plus/chat/.matplotlib
+Environment=NLTK_DATA=/usr/share/nltk_data
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=PIP_NO_INDEX=1
+EnvironmentFile=-/etc/lecore-plus/chat.env
+ExecStart=/opt/lecore-plus/venv/bin/python /opt/lecore-plus/bin/lecore-chat-server
+Restart=on-failure
+RestartSec=5
+# ---- confinement: loopback only, read-only system ----
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

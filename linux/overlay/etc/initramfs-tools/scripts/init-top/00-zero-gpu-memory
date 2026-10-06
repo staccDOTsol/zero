@@ -1,0 +1,19 @@
+#!/bin/sh
+# Zero: size the TTM (GPU shared memory) limit from RAM before udev loads GPU drivers in the initramfs.
+# Writes /run/modprobe.d/zero-gpu-memory.conf (the initramfs /run is carried into the booted system).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+read -r cmdline < /proc/cmdline
+case " $cmdline " in *" zero.no_gpu_memory_tuning "*) exit 0 ;; esac
+pct=85
+kb=0
+while read -r key val _; do
+  [ "$key" = "MemTotal:" ] && { kb=$val; break; }
+done < /proc/meminfo
+[ "$kb" -gt 0 ] 2>/dev/null || exit 0
+pages=$(( kb / 4 * pct / 100 ))
+mkdir -p /run/modprobe.d
+printf '# Zero: GPU-mappable system memory = %s%% of %s KiB RAM\noptions ttm pages_limit=%s page_pool_size=%s\n' \
+  "$pct" "$kb" "$pages" "$pages" > /run/modprobe.d/zero-gpu-memory.conf
+exit 0

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Zero
+Comment=Open Zero (local AI, no network) when you log in
+Exec=/opt/lecore-plus/bin/zero-app
+Icon=zero
+NoDisplay=true
+OnlyShowIn=GNOME;
+X-GNOME-Autostart-enabled=true

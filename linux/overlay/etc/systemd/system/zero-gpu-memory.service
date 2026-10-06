@@ -1,0 +1,17 @@
+# Zero: let the GPU drivers use most of system RAM (AMD Strix Halo shares memory with the iGPU;
+# the kernel default caps GPU-mappable system memory (TTM) at 50% of RAM). Writes
+# /run/modprobe.d/zero-gpu-memory.conf before udev loads the GPU drivers. The same file is written
+# inside the initramfs by /etc/initramfs-tools/scripts/init-top/zero-gpu-memory.
+[Unit]
+Description=Zero: size the GPU shared-memory limit (TTM) from installed RAM
+DefaultDependencies=no
+Before=systemd-udev-trigger.service systemd-udevd.service sysinit.target
+ConditionPathExists=!/etc/lecore-plus/no-gpu-memory-tuning
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/zero/gpu-memory-conf /run/modprobe.d/zero-gpu-memory.conf
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

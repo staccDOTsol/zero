@@ -1,0 +1,152 @@
+name: linux-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke:
+        description: "Boot-test the image in QEMU/OVMF before publishing"
+        type: boolean
+        default: true
+      publish:
+        description: "Publish a GitHub Release"
+        type: boolean
+        default: true
+  push:
+    paths:
+      - "linux/**"
+      - "provision/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-image
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    env:
+      OUT: /mnt/zero-out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          df -h / /mnt
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/PyPy \
+            /usr/local/share/boost /usr/share/swift /usr/local/julia* /opt/microsoft /opt/google \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/lib/jvm /opt/az \
+            /usr/local/lib/node_modules /opt/pipx || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          sudo apt-get remove -y --purge '^dotnet-.*' '^llvm-.*' '^mongodb-.*' '^mysql-.*' azure-cli \
+            google-chrome-stable firefox powershell microsoft-edge-stable >/dev/null 2>&1 || true
+          sudo apt-get autoremove -y >/dev/null 2>&1 || true
+          sudo mkdir -p "$OUT" && sudo chown "$USER" "$OUT"
+          df -h / /mnt
+          nproc; free -g
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mmdebstrap debian-archive-keyring gdisk dosfstools e2fsprogs \
+            qemu-system-x86 qemu-utils ovmf zstd curl python3 cloud-guest-utils
+          mmdebstrap --version; qemu-system-x86_64 --version | head -n1
+
+      - name: Enable KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm || echo "no /dev/kvm: the smoke test will run under TCG (slow)"
+
+      - name: Build image
+        run: |
+          # build on the larger disk
+          WORKDIR=$OUT/work
+          if [ "$(df --output=avail -B1G /mnt | tail -n1)" -lt 30 ]; then WORKDIR=$GITHUB_WORKSPACE/../zero-work; fi
+          sudo env WORK="$WORKDIR" GITHUB_SHA="$GITHUB_SHA" bash linux/build.sh "$OUT"
+          sudo rm -rf "$WORKDIR"
+          ls -la "$OUT"; df -h / /mnt
+
+      - name: Smoke test (QEMU + OVMF)
+        if: github.event_name == 'push' || inputs.smoke
+        run: sudo bash linux/smoke/run-smoke.sh "$OUT/zero-linux.img" "$OUT/smoke"
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: |
+            ${{ env.OUT }}/smoke/*.log
+            ${{ env.OUT }}/smoke/*.png
+            ${{ env.OUT }}/smoke/smoke-report.txt
+            ${{ env.OUT }}/BUILDINFO.txt
+            ${{ env.OUT }}/packages.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Compress and split
+        id: pack
+        run: |
+          TAG="linux-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          cd "$OUT"
+          sudo chown "$USER" zero-linux.img
+          RAW_SHA=$(sha256sum zero-linux.img | cut -d' ' -f1)
+          RAW_BYTES=$(stat -c %s zero-linux.img)
+          mkdir -p release
+          zstd -T0 -12 --long=27 -c zero-linux.img | split -b 1900M -d -a 2 - "release/zero-$TAG.img.zst.part"
+          rm -f zero-linux.img
+          cd release
+          ZST_SHA=$(cat zero-$TAG.img.zst.part* | sha256sum | cut -d' ' -f1)
+          {
+            sha256sum zero-$TAG.img.zst.part*
+            echo "$ZST_SHA  zero-$TAG.img.zst"
+            echo "$RAW_SHA  zero-$TAG.img"
+          } > SHA256SUMS
+          cp ../BUILDINFO.txt BUILDINFO.txt
+          cp ../packages.txt packages.txt
+          [ -f ../smoke/smoke-report.txt ] && cp ../smoke/smoke-report.txt smoke-report.txt
+          [ -f ../smoke/a-screen.png ] && cp ../smoke/a-screen.png smoke-first-boot-screen.png
+          cat SHA256SUMS; ls -la
+          echo "raw_bytes=$RAW_BYTES" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.pack.outputs.tag }}
+          RAW_BYTES: ${{ steps.pack.outputs.raw_bytes }}
+        run: |
+          cd "$OUT/release"
+          {
+            echo "Zero (leCore+) Linux factory image, built from ${GITHUB_SHA}."
+            echo
+            echo "Raw GPT disk image (UEFI), ${RAW_BYTES} bytes, zstd-compressed and split into parts of at most 1.9 GiB."
+            echo "Reassemble and write it as described in linux/flash.md:"
+            echo
+            echo '```'
+            echo "sha256sum -c --ignore-missing SHA256SUMS"
+            echo "cat zero-$TAG.img.zst.part* | zstd -d -c --long=27 > zero-$TAG.img"
+            echo '```'
+            echo
+            echo "No models are included; the imaging station adds them with provision/linux-add-models.sh."
+            echo
+            echo '```'
+            cat BUILDINFO.txt | grep -vE '^\s{18}' | head -n 40
+            echo '```'
+            if [ -f smoke-report.txt ]; then echo; echo "Smoke test (QEMU/OVMF):"; echo '```'; cat smoke-report.txt; echo '```'; fi
+          } > notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber zero-$TAG.img.zst.part* SHA256SUMS BUILDINFO.txt packages.txt $(ls smoke-* 2>/dev/null)
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --title "Zero Linux image $TAG" --notes-file notes.md --target "$GITHUB_SHA" \
+              zero-$TAG.img.zst.part* SHA256SUMS BUILDINFO.txt packages.txt $(ls smoke-* 2>/dev/null)
+          fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'

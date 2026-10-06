@@ -1,0 +1,15 @@
+# Zero: on the first boot after flashing, grow the root partition and its ext4 file system to fill
+# the disk (the factory image is 16 GiB; the laptop NVMe is much larger). Runs once.
+[Unit]
+Description=Zero: grow the root file system to fill the disk (first boot)
+After=local-fs.target
+Before=lecore-chat.service lecore-llama.service
+ConditionPathExists=!/var/lib/zero/growroot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zero-growroot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

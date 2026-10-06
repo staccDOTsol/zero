@@ -1,0 +1,84 @@
+#!/opt/lecore-plus/venv/bin/python
+"""Zero launcher for leCore's chat server (chat_server.py at the pinned commit, unmodified).
+
+chat_server.py at this commit starts with no model rung ("none") and does not read LECORE_LLM_URL
+itself; leCore's documented way to reach a model in another process is $LECORE_LLM_URL through its
+own OpenAI-compatible rung (holographic_remotellm.remote_llm, see leCore AGENTS.md / agent_boot).
+This launcher does exactly that and nothing more:
+
+  * builds leCore's remote_llm rung from $LECORE_LLM_URL (llama-server, http://127.0.0.1:8080/v1)
+    and attaches it the way lecore.autoboot() and attach_runtime() attach a rung
+    (mind.zoo_attach(rung) + mind._zoo_llm = rung);
+  * memory-only when no model is running: if llama-server is down (no model installed, loading,
+    stopped) the rung returns "" -- the same reply as chat_server's own "none" rung -- so leCore
+    answers from memory or escalates honestly instead of failing the request;
+  * honours the chat's Settings dialog: if the user picks another back end there, the rung defers to it;
+  * gives leCore a writable memory partition ($LECORE_PARTITION), seeded once from leCore's shipped
+    release_bundle (what lecore._core_memory_home() does for a pip install);
+  * serves the page with the window title "Zero".
+"""
+import os
+import shutil
+import sys
+
+LECORE = "/opt/lecore-plus/lecore"
+sys.path.insert(0, LECORE)
+
+state = os.getcwd()                                   # /var/lib/lecore-plus/chat (systemd WorkingDirectory)
+os.makedirs(os.path.join(state, "memories"), exist_ok=True)   # /opt/.../lecore/memories -> here
+part = os.environ.get("LECORE_PARTITION")
+seed = os.path.join(LECORE, "release_bundle")
+if part and not os.path.isdir(part) and os.path.isdir(seed):
+    shutil.copytree(seed, part)
+
+import chat_server as cs                              # noqa: E402  (leCore, unmodified)
+from flask import Response                            # noqa: E402
+from holographic.io_and_interop.holographic_remotellm import remote_llm   # noqa: E402
+
+RUNG_NAME = "llama.cpp"
+URL = os.environ.get("LECORE_LLM_URL", "").strip()
+
+
+def make_rung(mind):
+    remote = remote_llm(url=URL, timeout=float(os.environ.get("LECORE_LLM_TIMEOUT", "600")))
+
+    def rung(prompt, **kw):
+        if cs.STATE.get("llm") != RUNG_NAME:          # Settings switched to another back end
+            other = mind.zoo.get("llm")
+            if callable(other) and other is not rung:
+                return other(prompt)
+            return ""
+        try:
+            return remote(prompt, **kw)
+        except Exception as e:                        # llama-server not running: memory-only
+            sys.stderr.write("zero: model rung unavailable, answering memory-only (%s)\n" % str(e)[:200])
+            return ""
+
+    rung.__name__ = "zero_llama_rung"
+    rung.endpoint = remote.endpoint
+    return rung
+
+
+def home():
+    with open(os.path.join(LECORE, "chat_ui.html"), encoding="utf-8") as f:
+        html = f.read()
+    return Response(html.replace("<title>leCore</title>", "<title>Zero</title>", 1), mimetype="text/html")
+
+
+def main():
+    cs.APP.view_functions["home"] = home
+    mind = cs._mind()
+    if URL:
+        r = make_rung(mind)
+        mind.zoo_attach(r)
+        mind._zoo_llm = r
+        cs.STATE["llm"] = RUNG_NAME
+        cs.STATE["llm_detail"] = URL
+    print("Zero chat (leCore %s) -> http://127.0.0.1:7860   model rung: %s"
+          % (getattr(sys.modules.get("lecore"), "__version__", "?"),
+             (URL + "/chat/completions") if URL else "none (memory only)"), flush=True)
+    cs.APP.run(host="127.0.0.1", port=7860, debug=False)
+
+
+if __name__ == "__main__":
+    main()

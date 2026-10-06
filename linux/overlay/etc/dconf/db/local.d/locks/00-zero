@@ -1,0 +1,6 @@
+/org/gnome/system/location/enabled
+/org/gnome/desktop/privacy/report-technical-problems
+/org/gnome/desktop/privacy/send-software-usage-stats
+/org/gnome/desktop/datetime/automatic-timezone
+/org/gnome/online-accounts/whitelisted-providers
+/org/gnome/shell/allow-extension-installation

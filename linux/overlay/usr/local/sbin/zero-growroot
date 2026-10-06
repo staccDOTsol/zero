@@ -1,0 +1,19 @@
+#!/bin/sh
+# Zero first boot: grow the root partition (and its ext4 file system, online) to fill the disk.
+set -eu
+dev=$(readlink -f "$(findmnt -n -o SOURCE /)")          # e.g. /dev/nvme0n1p2
+part=$(basename "$dev")
+disk=$(lsblk -n -o PKNAME "$dev" | head -n 1)            # e.g. nvme0n1
+num=$(cat "/sys/class/block/$part/partition")
+echo "zero-growroot: root is $dev (partition $num of /dev/$disk)"
+rc=0
+growpart "/dev/$disk" "$num" || rc=$?
+case "$rc" in
+  0) echo "zero-growroot: partition grown" ;;
+  1) echo "zero-growroot: partition already fills the disk" ;;
+  *) echo "zero-growroot: growpart failed ($rc)" >&2; exit "$rc" ;;
+esac
+resize2fs "$dev"
+mkdir -p /var/lib/zero
+touch /var/lib/zero/growroot.done
+df -h /

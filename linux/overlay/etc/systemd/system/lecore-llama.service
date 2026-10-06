@@ -1,0 +1,48 @@
+# Zero: local model server. llama.cpp llama-server (Vulkan) on 127.0.0.1:8080, OpenAI-compatible /v1.
+# The model is the file named in /etc/lecore-plus/model (one line, a file name in
+# /var/lib/lecore-plus/models/). With no model installed the unit is skipped by its conditions:
+# it stays inactive (not failed) and does not restart.
+[Unit]
+Description=Zero local model server (llama.cpp, Vulkan) on 127.0.0.1:8080
+Documentation=file:///usr/share/lecore-plus/BUILDINFO.txt
+After=local-fs.target systemd-udev-settle.service nftables.service
+ConditionPathExists=/etc/lecore-plus/model
+ConditionDirectoryNotEmpty=/var/lib/lecore-plus/models
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=lecore
+Group=lecore
+SupplementaryGroups=render video
+EnvironmentFile=-/etc/lecore-plus/llama.env
+# The model file named in /etc/lecore-plus/model must exist; otherwise skip cleanly (exit 1 = skip).
+ExecCondition=/opt/lecore-plus/bin/lecore-llama-launch --check
+# NVIDIA: create /dev/nvidia* nodes if the driver is loaded (no-op on the AMD laptops).
+ExecStartPre=-+/usr/bin/nvidia-modprobe -c 0 -m
+ExecStart=/opt/lecore-plus/bin/lecore-llama-launch
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=infinity
+# ---- confinement: loopback only, read-only system ----
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target
