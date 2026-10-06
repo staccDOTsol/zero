@@ -6,7 +6,9 @@ name: golden-stage
 # AWS S3), STORE_BUCKET, STORE_REGION and secrets STORE_ACCESS_KEY_ID / STORE_SECRET_ACCESS_KEY. Without
 # those secrets it uses AWS through GitHub OIDC -> IAM role zero-golden-stage-lecore-plus (main branch of
 # this repo only, the bucket's base/ prefix only).
-# Not in the public mirror (staccDOTsol/zero): like windows-image.yml it handles Windows ISOs.
+# It stages from the releases of the repo it runs in: here (lecore-plus) the linux-* bases; in
+# kekloldyormarket/zero-golden (a copy, golden/build-golden.sh) the windows-* ISOs, which are built there.
+# Not in the public mirror (staccDOTsol/zero): it handles Windows ISOs.
 on:
   workflow_dispatch:
     inputs:

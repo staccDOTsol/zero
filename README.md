@@ -78,7 +78,7 @@ remains for service work, e.g. putting a different default on one laptop.
 ```
 models/catalog.json      model menu: HF repo, file, sha256, size, license, which tiers it fits
 linux/                   Linux image build  → .github/workflows/linux-image.yml
-windows/                 Windows image build → .github/workflows/windows-image.yml
+windows/                 Windows image build → windows/ci/windows-image.yml (runs in kekloldyormarket/zero-golden)
 provision/               put catalog models onto a Zero disk or disk image (used by the golden builds)
 golden/                  golden images: base image + every model of the tier, verified, to S3
 ```

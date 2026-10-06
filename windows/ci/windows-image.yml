@@ -1,4 +1,6 @@
 # Zero (leCore+) Windows factory image.
+# Runs in kekloldyormarket/zero-golden (private, org-billed; golden/build-golden.sh copies it there as
+# .github/workflows/windows-image.yml). Kept here, outside .github/workflows, so this repo does not run it.
 #   push (windows/**)      -> stack zip + smoke test on a Windows runner
 #   workflow_dispatch full -> + Windows 11 Pro ISOs per target, published as ≤1.9 GiB parts to the
 #                             PRIVATE release windows-YYYYMMDD-<shortsha>
@@ -14,6 +16,7 @@ on:
       - 'windows/**'
       - 'provision/windows-*'
       - '.github/workflows/windows-image.yml'
+      - 'windows/ci/windows-image.yml'
   workflow_dispatch:
     inputs:
       mode:
