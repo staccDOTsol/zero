@@ -1,0 +1,784 @@
+{
+  "updated": "2026-10-05",
+  "runtime": "llama.cpp b11430 (Vulkan)",
+  "tiers": {
+    "pro": {
+      "memory_gb": 64,
+      "budget_gb": 44
+    },
+    "max": {
+      "memory_gb": 128,
+      "budget_gb": 100
+    },
+    "ultra": {
+      "vram_gb": 24,
+      "ram_gb": 128,
+      "fast_gb": 20,
+      "budget_gb": 100
+    }
+  },
+  "models": [
+    {
+      "id": "qwen3.8-27b",
+      "name": "Qwen3.8 27B",
+      "maker": "Qwen (Alibaba)",
+      "params": "27B dense",
+      "notes": "Best all-rounder that fits every tier: coding, agents, reasoning",
+      "uncensored": false,
+      "license": "apache-2.0",
+      "released": "2026-08",
+      "builds": {
+        "pro": {
+          "repo": "unsloth/Qwen3.8-27B-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+              "bytes": 17559178144,
+              "sha256": "3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72bc8b01e"
+            }
+          ]
+        },
+        "max": {
+          "repo": "unsloth/Qwen3.8-27B-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Qwen3.8-27B-Q8_0.gguf",
+              "bytes": 29047086048,
+              "sha256": "a680f44a06920e5d689774823782006aa3acc8db95750323373b24139b67e348"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "unsloth/Qwen3.8-27B-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+              "bytes": 17559178144,
+              "sha256": "3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72bc8b01e"
+            }
+          ]
+        }
+      },
+      "default_for": [
+        "pro",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "id": "qwen3.8-flash-next",
+      "name": "Qwen3.8 Flash-Next",
+      "maker": "Qwen (Alibaba)",
+      "params": "180B (6B active)",
+      "notes": "Qwen4-preview MoE: top coding/agentic scores, fast. Non-Apache license",
+      "uncensored": false,
+      "license": "qwen-community-1.0",
+      "released": "2026-08",
+      "builds": {
+        "pro": null,
+        "max": {
+          "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+          "quant": "UD-IQ4_XS",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+              "bytes": 10946624,
+              "sha256": "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"
+            },
+            {
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+              "bytes": 49835229856,
+              "sha256": "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7"
+            },
+            {
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+              "bytes": 43836407744,
+              "sha256": "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+          "quant": "UD-IQ4_XS",
+          "speed": "offload",
+          "files": [
+            {
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+              "bytes": 10946624,
+              "sha256": "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"
+            },
+            {
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+              "bytes": 49835229856,
+              "sha256": "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7"
+            },
+            {
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+              "bytes": 43836407744,
+              "sha256": "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM-5.3-Flash",
+      "maker": "Z.ai (zai-org)",
+      "params": "320B (18B active)",
+      "notes": "Current-gen GLM MoE for agentic coding; 1-bit-class quant to fit 100 GB",
+      "uncensored": false,
+      "license": "mit",
+      "released": "2026-08",
+      "builds": {
+        "pro": null,
+        "max": {
+          "repo": "unsloth/GLM-5.3-Flash-GGUF",
+          "quant": "UD-IQ1_M",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00001-of-00003.gguf",
+              "bytes": 9429984,
+              "sha256": "a3f31b5ba1ecc620a7c2088c30eb830c488453932f3e9e530777efb5980b0ef7"
+            },
+            {
+              "path": "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00002-of-00003.gguf",
+              "bytes": 49996246592,
+              "sha256": "6bcfc2210cced11cede6cd6ce4ac3368c0b1ab52d6fc3e40f2a3f310f0614001"
+            },
+            {
+              "path": "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00003-of-00003.gguf",
+              "bytes": 47573668096,
+              "sha256": "07e252723e988154340414ebd6857051179f69eb25112ad75122d4230ccfc6f7"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "unsloth/GLM-5.3-Flash-GGUF",
+          "quant": "UD-IQ1_M",
+          "speed": "offload",
+          "files": [
+            {
+              "path": "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00001-of-00003.gguf",
+              "bytes": 9429984,
+              "sha256": "a3f31b5ba1ecc620a7c2088c30eb830c488453932f3e9e530777efb5980b0ef7"
+            },
+            {
+              "path": "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00002-of-00003.gguf",
+              "bytes": 49996246592,
+              "sha256": "6bcfc2210cced11cede6cd6ce4ac3368c0b1ab52d6fc3e40f2a3f310f0614001"
+            },
+            {
+              "path": "UD-IQ1_M/GLM-5.3-Flash-UD-IQ1_M-00003-of-00003.gguf",
+              "bytes": 47573668096,
+              "sha256": "07e252723e988154340414ebd6857051179f69eb25112ad75122d4230ccfc6f7"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "deepseek-v4-flash-0731",
+      "name": "DeepSeek V4 Flash (0731)",
+      "maker": "DeepSeek",
+      "params": "284B (13B active)",
+      "notes": "Strong agentic/terminal coding and long context; 2-bit quant to fit",
+      "uncensored": false,
+      "license": "mit",
+      "released": "2026-07",
+      "builds": {
+        "pro": null,
+        "max": {
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "quant": "UD-Q2_K_XL",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf",
+              "bytes": 5257664,
+              "sha256": "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b"
+            },
+            {
+              "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf",
+              "bytes": 49437013568,
+              "sha256": "c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327"
+            },
+            {
+              "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf",
+              "bytes": 47390237120,
+              "sha256": "a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "quant": "UD-Q2_K_XL",
+          "speed": "offload",
+          "files": [
+            {
+              "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf",
+              "bytes": 5257664,
+              "sha256": "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b"
+            },
+            {
+              "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf",
+              "bytes": 49437013568,
+              "sha256": "c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327"
+            },
+            {
+              "path": "UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf",
+              "bytes": 47390237120,
+              "sha256": "a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "laguna-s-2.1",
+      "name": "Laguna S 2.1",
+      "maker": "poolside",
+      "params": "118B (8B active)",
+      "notes": "Agentic-coding specialist, 1M context, fast 8B-active MoE",
+      "uncensored": false,
+      "license": "openmdw-1.1",
+      "released": "2026-07",
+      "builds": {
+        "pro": null,
+        "max": {
+          "repo": "ggml-org/Laguna-S-2.1-GGUF",
+          "quant": "Q4_K_M",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Laguna-S-2.1-Q4_K_M.gguf",
+              "bytes": 67661639264,
+              "sha256": "2bf879f8b15e0e78e3b76c7918cdae306444d049aeb007dda22a507125a5296a"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "ggml-org/Laguna-S-2.1-GGUF",
+          "quant": "Q4_K_M",
+          "speed": "offload",
+          "files": [
+            {
+              "path": "Laguna-S-2.1-Q4_K_M.gguf",
+              "bytes": 67661639264,
+              "sha256": "2bf879f8b15e0e78e3b76c7918cdae306444d049aeb007dda22a507125a5296a"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "qwen3.8-27b-abliterated",
+      "name": "Qwen3.8 27B Abliterated",
+      "maker": "huihui-ai (from Qwen)",
+      "params": "27B dense",
+      "notes": "Qwen3.8 27B with refusals removed by abliteration",
+      "uncensored": true,
+      "license": "apache-2.0",
+      "released": "2026-08",
+      "builds": {
+        "pro": {
+          "repo": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf",
+              "bytes": 17378626464,
+              "sha256": "ebbc66b45cf36bf47dc052d560337ff047a8b4eef851c8919d83d623703b6aa4"
+            }
+          ]
+        },
+        "max": {
+          "repo": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Huihui-Qwen3.8-27B-abliterated-Q8_0.gguf",
+              "bytes": 29047084320,
+              "sha256": "427b9416c2aba9d21da4e90ddac50a2bc8b6d0bfef675af3580a43aa38e000c3"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf",
+              "bytes": 17378626464,
+              "sha256": "ebbc66b45cf36bf47dc052d560337ff047a8b4eef851c8919d83d623703b6aa4"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "glm-5.3-flash-abliterated",
+      "name": "GLM-5.3-Flash Abliterated",
+      "maker": "huihui-ai (from Z.ai)",
+      "params": "320B (18B active)",
+      "notes": "GLM-5.3-Flash with refusals removed (layers 15-35); 1-bit-class quant",
+      "uncensored": true,
+      "license": "mit",
+      "released": "2026-09",
+      "builds": {
+        "pro": null,
+        "max": {
+          "repo": "huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF",
+          "quant": "UD-IQ1_S",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf",
+              "bytes": 9429984,
+              "sha256": "909a8a2dedb493c5a694facfd1e0e9a3309ac66fbb9d270c024ff5d12e0d565f"
+            },
+            {
+              "path": "UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00002-of-00003.gguf",
+              "bytes": 49621122656,
+              "sha256": "43da40c25ea07e1e77df84dd631a3da7da1dd54bd44fa7fdfd72c14ebee03060"
+            },
+            {
+              "path": "UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00003-of-00003.gguf",
+              "bytes": 43456692768,
+              "sha256": "4dd80f68448de1a9e32a2c0393db6c5fd76e2b9ccfdf5f11a99cf2ec6b74576a"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF",
+          "quant": "UD-IQ1_S",
+          "speed": "offload",
+          "files": [
+            {
+              "path": "UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf",
+              "bytes": 9429984,
+              "sha256": "909a8a2dedb493c5a694facfd1e0e9a3309ac66fbb9d270c024ff5d12e0d565f"
+            },
+            {
+              "path": "UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00002-of-00003.gguf",
+              "bytes": 49621122656,
+              "sha256": "43da40c25ea07e1e77df84dd631a3da7da1dd54bd44fa7fdfd72c14ebee03060"
+            },
+            {
+              "path": "UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00003-of-00003.gguf",
+              "bytes": 43456692768,
+              "sha256": "4dd80f68448de1a9e32a2c0393db6c5fd76e2b9ccfdf5f11a99cf2ec6b74576a"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "gemma-4-31b",
+      "name": "Gemma 4 31B",
+      "maker": "Google DeepMind",
+      "params": "31B dense",
+      "notes": "Polished writing, multilingual chat, math; dense and predictable",
+      "uncensored": false,
+      "license": "apache-2.0",
+      "released": "2026-04",
+      "builds": {
+        "pro": {
+          "repo": "google/gemma-4-31B-it-qat-q4_0-gguf",
+          "quant": "Q4_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gemma-4-31B_q4_0-it.gguf",
+              "bytes": 17651001568,
+              "sha256": "179cfb99212709597eae5929112cfca677e1bbf566178b479ae1da0c4772874b"
+            }
+          ]
+        },
+        "max": {
+          "repo": "unsloth/gemma-4-31B-it-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gemma-4-31B-it-Q8_0.gguf",
+              "bytes": 32635677632,
+              "sha256": "d5808e5874e660a85ab45b2da00c9e3b4a003621249a333772232d1a703e4d67"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "google/gemma-4-31B-it-qat-q4_0-gguf",
+          "quant": "Q4_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gemma-4-31B_q4_0-it.gguf",
+              "bytes": 17651001568,
+              "sha256": "179cfb99212709597eae5929112cfca677e1bbf566178b479ae1da0c4772874b"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "mistral-small-4",
+      "name": "Mistral Small 4 (2603)",
+      "maker": "Mistral AI",
+      "params": "119B (6.5B active)",
+      "notes": "Instruct + reasoning + coding in one MoE; strong multilingual, fast",
+      "uncensored": false,
+      "license": "apache-2.0",
+      "released": "2026-03",
+      "builds": {
+        "pro": null,
+        "max": {
+          "repo": "unsloth/Mistral-Small-4-119B-2603-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "UD-Q4_K_XL/Mistral-Small-4-119B-2603-UD-Q4_K_XL-00001-of-00003.gguf",
+              "bytes": 7875616,
+              "sha256": "fd3cc46082e4e64eb623eea4611b02583d1de4c20a59411bf1820925d5117dfe"
+            },
+            {
+              "path": "UD-Q4_K_XL/Mistral-Small-4-119B-2603-UD-Q4_K_XL-00002-of-00003.gguf",
+              "bytes": 49697757344,
+              "sha256": "f51e11020a2f36c542f3bdfda4c7e127d8d2a865e85a982e0a9185fa60d7b8f7"
+            },
+            {
+              "path": "UD-Q4_K_XL/Mistral-Small-4-119B-2603-UD-Q4_K_XL-00003-of-00003.gguf",
+              "bytes": 24456006464,
+              "sha256": "9dc960d67fb1ef23029d24878b4cf6c63b743ab26cf9137402549591bd770c50"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "unsloth/Mistral-Small-4-119B-2603-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "speed": "offload",
+          "files": [
+            {
+              "path": "UD-Q4_K_XL/Mistral-Small-4-119B-2603-UD-Q4_K_XL-00001-of-00003.gguf",
+              "bytes": 7875616,
+              "sha256": "fd3cc46082e4e64eb623eea4611b02583d1de4c20a59411bf1820925d5117dfe"
+            },
+            {
+              "path": "UD-Q4_K_XL/Mistral-Small-4-119B-2603-UD-Q4_K_XL-00002-of-00003.gguf",
+              "bytes": 49697757344,
+              "sha256": "f51e11020a2f36c542f3bdfda4c7e127d8d2a865e85a982e0a9185fa60d7b8f7"
+            },
+            {
+              "path": "UD-Q4_K_XL/Mistral-Small-4-119B-2603-UD-Q4_K_XL-00003-of-00003.gguf",
+              "bytes": 24456006464,
+              "sha256": "9dc960d67fb1ef23029d24878b4cf6c63b743ab26cf9137402549591bd770c50"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "gpt-oss-120b",
+      "name": "gpt-oss 120B",
+      "maker": "OpenAI",
+      "params": "117B (5.1B active)",
+      "notes": "OpenAI open-weight MoE: reliable reasoning and tool calls, native MXFP4",
+      "uncensored": false,
+      "license": "apache-2.0",
+      "released": "2025-08",
+      "builds": {
+        "pro": null,
+        "max": {
+          "repo": "ggml-org/gpt-oss-120b-GGUF",
+          "quant": "MXFP4",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gpt-oss-120b-MXFP4.gguf",
+              "bytes": 63387346208,
+              "sha256": "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "ggml-org/gpt-oss-120b-GGUF",
+          "quant": "MXFP4",
+          "speed": "offload",
+          "files": [
+            {
+              "path": "gpt-oss-120b-MXFP4.gguf",
+              "bytes": 63387346208,
+              "sha256": "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "glm-4.7-flash",
+      "name": "GLM-4.7-Flash",
+      "maker": "Z.ai (zai-org)",
+      "params": "30B (3B active)",
+      "notes": "Lightweight GLM MoE for coding/agents; the GLM that fits every tier",
+      "uncensored": false,
+      "license": "mit",
+      "released": "2026-01",
+      "builds": {
+        "pro": {
+          "repo": "unsloth/GLM-4.7-Flash-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "GLM-4.7-Flash-Q8_0.gguf",
+              "bytes": 31842799968,
+              "sha256": "8c0922b03326932a40315ce92bbee01cc836ad18664268019143c898bdd7dd0b"
+            }
+          ]
+        },
+        "max": {
+          "repo": "unsloth/GLM-4.7-Flash-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "GLM-4.7-Flash-Q8_0.gguf",
+              "bytes": 31842799968,
+              "sha256": "8c0922b03326932a40315ce92bbee01cc836ad18664268019143c898bdd7dd0b"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "unsloth/GLM-4.7-Flash-GGUF",
+          "quant": "UD-Q4_K_XL",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "GLM-4.7-Flash-UD-Q4_K_XL.gguf",
+              "bytes": 17520169312,
+              "sha256": "b0d4fbc1211f891b4cfbf2a497160bfe06a49412420068904d426b7a13f4ba7f"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "nemotron-3.5-lightning-30b",
+      "name": "Nemotron 3.5 Lightning 30B-A3B",
+      "maker": "NVIDIA",
+      "params": "30B (3B active)",
+      "notes": "Hybrid Mamba-MoE: very fast, long context, tool use, reasoning toggle",
+      "uncensored": false,
+      "license": "openmdw-1.1",
+      "released": "2026-08",
+      "builds": {
+        "pro": {
+          "repo": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q8_0.gguf",
+              "bytes": 33585495616,
+              "sha256": "d4cc4c9fffaa356db8b49cfaba9233609cfb29b4dd89d827665210dc1cc8dbbb"
+            }
+          ]
+        },
+        "max": {
+          "repo": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q8_0.gguf",
+              "bytes": 33585495616,
+              "sha256": "d4cc4c9fffaa356db8b49cfaba9233609cfb29b4dd89d827665210dc1cc8dbbb"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+          "quant": "Q4_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+              "bytes": 18898091584,
+              "sha256": "61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "gemma-4-26b-a4b",
+      "name": "Gemma 4 26B-A4B",
+      "maker": "Google DeepMind",
+      "params": "26B (4B active)",
+      "notes": "Fast everyday chat and writing; small-active MoE",
+      "uncensored": false,
+      "license": "apache-2.0",
+      "released": "2026-04",
+      "builds": {
+        "pro": {
+          "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gemma-4-26B-A4B-it-Q8_0.gguf",
+              "bytes": 26859861728,
+              "sha256": "5f7cbd0f4564e84342fc34321a09acb54b1a3da9215124e5bf444baa6dda152c"
+            }
+          ]
+        },
+        "max": {
+          "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+          "quant": "Q8_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gemma-4-26B-A4B-it-Q8_0.gguf",
+              "bytes": 26859861728,
+              "sha256": "5f7cbd0f4564e84342fc34321a09acb54b1a3da9215124e5bf444baa6dda152c"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+          "quant": "Q4_0",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gemma-4-26B_q4_0-it.gguf",
+              "bytes": 14439363584,
+              "sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "gemma-4-26b-a4b-abliterated",
+      "name": "Gemma 4 26B-A4B Abliterated",
+      "maker": "huihui-ai (from Google)",
+      "params": "26B (4B active)",
+      "notes": "Fast Gemma 4 MoE with refusals removed by abliteration",
+      "uncensored": true,
+      "license": "apache-2.0",
+      "released": "2026-06",
+      "builds": {
+        "pro": {
+          "repo": "huihui-ai/Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-GGUF",
+          "quant": "Q4_K",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+              "bytes": 16796015648,
+              "sha256": "4b4f9d4b448fca16230f08d50c18a95c81ecfaefede95d3bdfcf1880b4b620f5"
+            }
+          ]
+        },
+        "max": {
+          "repo": "huihui-ai/Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-GGUF",
+          "quant": "Q4_K",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+              "bytes": 16796015648,
+              "sha256": "4b4f9d4b448fca16230f08d50c18a95c81ecfaefede95d3bdfcf1880b4b620f5"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "huihui-ai/Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-GGUF",
+          "quant": "Q4_K",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+              "bytes": 16796015648,
+              "sha256": "4b4f9d4b448fca16230f08d50c18a95c81ecfaefede95d3bdfcf1880b4b620f5"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    },
+    {
+      "id": "gpt-oss-20b",
+      "name": "gpt-oss 20B",
+      "maker": "OpenAI",
+      "params": "21B (3.6B active)",
+      "notes": "Small, fast, low-memory: quick answers and light reasoning",
+      "uncensored": false,
+      "license": "apache-2.0",
+      "released": "2025-08",
+      "builds": {
+        "pro": {
+          "repo": "ggml-org/gpt-oss-20b-GGUF",
+          "quant": "MXFP4",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gpt-oss-20b-MXFP4.gguf",
+              "bytes": 12109566624,
+              "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+            }
+          ]
+        },
+        "max": {
+          "repo": "ggml-org/gpt-oss-20b-GGUF",
+          "quant": "MXFP4",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gpt-oss-20b-MXFP4.gguf",
+              "bytes": 12109566624,
+              "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+            }
+          ]
+        },
+        "ultra": {
+          "repo": "ggml-org/gpt-oss-20b-GGUF",
+          "quant": "MXFP4",
+          "speed": "fast",
+          "files": [
+            {
+              "path": "gpt-oss-20b-MXFP4.gguf",
+              "bytes": 12109566624,
+              "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+            }
+          ]
+        }
+      },
+      "default_for": []
+    }
+  ]
+}
