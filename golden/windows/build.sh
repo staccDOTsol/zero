@@ -121,9 +121,11 @@ python3 "$HERE/unattend.py" shipped "$WORK/iso-autounattend.xml" "$WORK/shipped-
 # media A: the ISO's own files as an ISO 9660 + Joliet DVD with the build answer file at its root and
 # the no-prompt UEFI boot image (no "Press any key to boot from CD")
 cp "$WORK/build-autounattend.xml" "$WORK/iso/autounattend.xml"
-EFI_IMG=efi/microsoft/boot/efisys_noprompt.bin
 NOPROMPT=1
-if [ ! -f "$WORK/iso/$EFI_IMG" ]; then EFI_IMG=efi/microsoft/boot/efisys.bin; NOPROMPT=0; fi
+EFI_IMG=$(cd "$WORK/iso" && find . -ipath './efi/microsoft/boot/efisys_noprompt.bin' | head -n1)
+if [ -z "$EFI_IMG" ]; then EFI_IMG=$(cd "$WORK/iso" && find . -ipath './efi/microsoft/boot/efisys.bin' | head -n1); NOPROMPT=0; fi
+[ -n "$EFI_IMG" ] || die "no UEFI El Torito image (efi/microsoft/boot/efisys*.bin) in the ISO"
+EFI_IMG=${EFI_IMG#./}
 xorriso -as mkisofs -iso-level 3 -J -joliet-long -V ZERO_GOLDEN -o "$WORK/build.iso" \
   -e "$EFI_IMG" -no-emul-boot "$WORK/iso" 2>&1 | tail -n 2
 rm -rf "$WORK/iso"
