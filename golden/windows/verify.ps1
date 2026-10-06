@@ -70,8 +70,9 @@ try {
     $golden = Get-Content -Raw -LiteralPath (Join-Path $data 'golden.json') | ConvertFrom-Json
     $sid = (Get-LocalUser | Select-Object -First 1).SID.AccountDomainSid.Value
     Check 'new machine SID (sysprep /generalize)' ($sid -and $sid -ne $golden.build_machine_sid) "this boot $sid, build VM $($golden.build_machine_sid)"
-    $users = @(Get-LocalUser | Where-Object { $_.Enabled } | ForEach-Object { $_.Name })
-    Check 'no enabled user account baked in (the owner creates one at OOBE)' ($users.Count -eq 0) ("enabled: " + ($users -join ', '))
+    # defaultuser0 is Windows' own temporary OOBE account (removed when OOBE finishes)
+    $users = @(Get-LocalUser | Where-Object { $_.Enabled -and $_.Name -notmatch '^defaultuser\d+$' } | ForEach-Object { $_.Name })
+    Check 'no enabled user account baked in (the owner creates one at OOBE)' ($users.Count -eq 0) ("enabled: " + ($users -join ', ') + "; all: " + ((Get-LocalUser | ForEach-Object { "$($_.Name)$(if ($_.Enabled) { '*' })" }) -join ', '))
     $unattend = Join-Path $env:WINDIR 'Panther\unattend.xml'
     Check 'OOBE answer file in place (local account, no Microsoft-account screens)' ((Test-Path $unattend) -and ((Get-Content -Raw $unattend) -match 'HideOnlineAccountScreens>true')) $unattend
     Info 'stack installed in' ([string]$golden.stack_installed_in)
@@ -93,7 +94,7 @@ try {
     $keyFile = Join-Path $data 'secret\llama-api-key'
     $key = if (Test-Path $keyFile) { (Get-Content -Raw -LiteralPath $keyFile).Trim() } else { '' }
     $keySha = if ($key) { (Get-FileHash -LiteralPath $keyFile -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
-    Check 'per-machine llama-server API key generated on this machine by the first-boot task (not the build VM''s)' ($key -match '^[0-9a-f]{64}$' -and $keySha -ne $golden.build_api_key_sha256) "sha256 $keySha vs build $($golden.build_api_key_sha256)"
+    Check 'per-machine llama-server API key generated on this machine at first boot (not the build VM''s)' ($key -match '^[0-9a-f]{64}$' -and $keySha -ne $golden.build_api_key_sha256) "sha256 $keySha vs build $($golden.build_api_key_sha256)"
     $auth = @{ Authorization = "Bearer $key" }
 
     # --- models -------------------------------------------------------------------------------------------

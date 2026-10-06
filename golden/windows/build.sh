@@ -318,27 +318,32 @@ json.dump({"tier": tier, "target": target, "display_vendor": vendor, "disk_bytes
            "default": s["default"], "default_file": s["default_file"], "models": s["models"], "files": files},
           open(out, "w"), indent=1)
 PY
-# the test hook: the image's own SetupComplete.cmd with one line added at the top (overlay only)
+# The test hook, in the overlay only: one line at the hook point of the image's own first-boot script,
+# which the \Zero\Zero golden first boot task runs at startup (during OOBE). It starts verify.ps1 as a
+# separate process (WMI Win32_Process.Create, so it is not part of the task's job object).
+FB="Program Files/leCore+/golden/firstboot.ps1"
 attach; ntfs-3g -o ro "$WINPART" "$MNT"
-cat "$MNT/Windows/Setup/Scripts/SetupComplete.cmd" > "$VS/SetupComplete.cmd" 2>/dev/null || printf '@echo off\r\n' > "$VS/SetupComplete.cmd"
+cp "$MNT/$FB" "$VS/firstboot.ps1"
 detach
-python3 - "$VS/SetupComplete.cmd" <<'PY'
+python3 - "$VS/firstboot.ps1" <<'PY'
 import sys
 p = sys.argv[1]
-t = open(p, encoding="utf-8", errors="replace").read()
-hook = ('rem ZERO GOLDEN TEST ONLY (added to a throwaway overlay by golden/windows/build.sh, not in the image)\r\n'
-        '"%WINDIR%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass '
-        '-File C:\\zero-verify\\verify.ps1 > C:\\zero-verify\\verify.log 2>&1\r\n')
-lines = t.split("\n")
-i = 1 if lines and lines[0].strip().lower() == "@echo off" else 0
-open(p, "w", encoding="utf-8", newline="").write("\n".join(lines[:i]) + ("\n" if i else "") + hook + "\n".join(lines[i:]))
+t = open(p, encoding="utf-8-sig").read()
+mark = "# (golden test hook point: the build's throwaway verification overlay adds a line here)"
+if mark not in t:
+    sys.exit("firstboot.ps1 in the image has no test hook point")
+hook = ("# ZERO GOLDEN TEST ONLY (added to a throwaway overlay by golden/windows/build.sh, not in the image)\r\n"
+        "if (-not $InSpecialize -and -not (Test-Path 'C:\\zero-verify\\started')) { New-Item -ItemType File 'C:\\zero-verify\\started' | Out-Null; "
+        "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "
+        "'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& C:\\zero-verify\\verify.ps1 *> C:\\zero-verify\\verify.log\"' } | Out-Null }")
+open(p, "w", encoding="utf-8", newline="").write(t.replace(mark, hook))
 PY
 qemu-img create -q -f qcow2 -F raw -b "$DISK" "$OV" "$NVME_BYTES"
 if modprobe nbd max_part=16 2>/dev/null && [ -e /dev/nbd0 ]; then
   qemu-nbd -c /dev/nbd0 "$OV"; udevadm settle 2>/dev/null || sleep 2; partprobe /dev/nbd0 2>/dev/null || true; sleep 2
   ntfs-3g "$(ntfs_part /dev/nbd0)" "$MNT"
   cp -r "$VS/zero-verify" "$MNT/"
-  cp "$VS/SetupComplete.cmd" "$MNT/Windows/Setup/Scripts/SetupComplete.cmd"
+  cp "$VS/firstboot.ps1" "$MNT/$FB"
   umount "$MNT"; qemu-nbd -d /dev/nbd0 >/dev/null
 else
   say "no nbd module: writing the test hook into the overlay with guestfish"
@@ -346,7 +351,7 @@ else
   chmod 0644 /boot/vmlinuz-* 2>/dev/null || true
   P3=$(guestfish --ro -a "$OV" run : list-filesystems | awk -F: '/ntfs/{print $1}' | tail -n 1)
   guestfish --rw -a "$OV" run : mount "$P3" / : mkdir-p /zero-verify : copy-in "$VS/zero-verify/verify.ps1" "$VS/zero-verify/expect.json" /zero-verify \
-    : upload "$VS/SetupComplete.cmd" /Windows/Setup/Scripts/SetupComplete.cmd : umount-all
+    : upload "$VS/firstboot.ps1" "/$FB" : umount-all
 fi
 cp "$OVMF_VARS" "$VARS"   # a laptop fresh from imaging: no boot entries in its firmware
 VM_START_RE=ZERO_VERIFY_STARTED VM_START_TMO=$((2700 * TS)) vm verify $((5400 * TS)) 'ZERO_VERIFY_DONE' "$VERIFY_SMP" "$VERIFY_MEM" -- \

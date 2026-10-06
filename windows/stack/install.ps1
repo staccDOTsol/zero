@@ -139,11 +139,14 @@ function Install-WinSWService {
     Copy-Item -Force $WinSW $exe
     & $exe install
     if ($LASTEXITCODE -ne 0) { throw "WinSW install of $Id failed ($LASTEXITCODE)" }
-    # Least privilege: run as LOCAL SERVICE, not LocalSystem. (Win32_Service.Change; sc.exe cannot be
-    # handed an empty password= argument from Windows PowerShell.)
-    $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$Id'"
-    $r = Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ StartName = 'NT AUTHORITY\LocalService'; StartPassword = '' }
-    if ($r.ReturnValue -ne 0) { throw "Win32_Service.Change(StartName=LocalService) failed for $Id (return $($r.ReturnValue))" }
+    # Least privilege: run as LOCAL SERVICE, not LocalSystem. sc.exe, not WMI: in Windows Setup's
+    # specialize pass Win32_Service.Change fails with "Provider failure" (0x80041004). Start-Process with
+    # one argument string, because Windows PowerShell drops an empty "" argument (password= "").
+    $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\sc.exe') -Wait -PassThru -NoNewWindow `
+        -ArgumentList ('config "{0}" obj= "NT AUTHORITY\LocalService" password= ""' -f $Id)
+    if ($p.ExitCode -ne 0) { throw "sc config $Id obj= LocalService failed ($($p.ExitCode))" }
+    $qc = (& sc.exe qc $Id) -join ' '
+    if ($qc -notmatch 'SERVICE_START_NAME\s*:\s*NT AUTHORITY\\LocalService') { throw "service $Id does not run as LOCAL SERVICE: $qc" }
     & sc.exe failureflag $Id 1 | Out-Null
     # Give the service its own SID (NT SERVICE\<id>) in its token, so files can be shared with just it.
     & sc.exe sidtype $Id unrestricted | Out-Null

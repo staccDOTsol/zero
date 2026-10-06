@@ -1,8 +1,11 @@
 <#
-  Zero golden image: one-time work on each laptop's first boot. Scheduled task
-  \Zero\Zero golden first boot (at startup, SYSTEM), installed by golden/windows/audit.ps1 before
-  sysprep. It does not depend on the image's answer file, so it also runs when an imaging service
-  applies its own unattend.xml.
+  Zero golden image: one-time work on each laptop's first boot. It runs twice, and every step is
+  idempotent:
+    - in the specialize pass of the image's answer file (-InSpecialize, before the model service
+      starts, so the per-machine API key exists when it does), and
+    - as the scheduled task \Zero\Zero golden first boot (at startup, SYSTEM; installed by
+      golden/windows/audit.ps1 before sysprep), which also covers an imaging service that applies its
+      own answer file. The task removes itself when everything is done.
 
   1. C: grows to the end of the disk. The golden image is only as large as Windows + the tier's
      models; written onto a 1 TB / 2 TB NVMe the rest of the disk would otherwise sit unallocated.
@@ -10,8 +13,9 @@
      Linux): their ACLs are reset to the folder's inherited ones (LOCAL SERVICE read, users read).
   3. The laptop's own Windows 11 Pro key from its firmware (OA3 / ACPI MSDM) is installed, if the
      firmware has one and it is not the installed key already. Activation then happens online by itself.
-  4. The per-machine llama-server API key exists (the specialize pass makes it; if an imaging
-     service replaced our answer file, install.ps1 is run here instead).
+  4. The per-machine llama-server API key: 256 random bits made on this machine, readable only by the two
+     Zero services, SYSTEM and Administrators (the same as windows/stack/install.ps1 Set-LlamaApiKey).
+     The image carries none: golden/windows/audit.ps1 deleted the build VM's key before sysprep.
   5. Hibernation (and with it Fast Startup) back on: it was off only so the image carries no
      hiberfil.sys.
   Then the task removes itself. Log: C:\ProgramData\leCore+\logs\golden-firstboot.log
@@ -28,10 +32,11 @@ $ok = $true
 $state = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State' -ErrorAction SilentlyContinue).ImageState
 Say "Zero golden first boot (image state $state)"
 if (-not $InSpecialize -and ($state -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' -or $state -eq 'IMAGE_STATE_UNDEPLOYABLE')) {
-    # the specialize pass has not finished yet (it installs the stack and the API key): next boot
+    # the specialize pass has not finished yet: next boot
     Say 'Windows Setup is still in its specialize pass; running at the next boot'
     exit 0
 }
+# (golden test hook point: the build's throwaway verification overlay adds a line here)
 
 # 1. C: to the end of the disk --------------------------------------------------------------------------
 $extended = $false
@@ -85,15 +90,24 @@ try {
     } else { Say 'no OA3 product key in the firmware (not a licensed laptop, or a VM)' }
 } catch { Say "firmware key: $($_.Exception.Message)" }
 
-# 4. per-machine llama-server API key (the specialize pass made it just before this script) ---------------
+# 4. per-machine llama-server API key ----------------------------------------------------------------------
 $key = Join-Path $data 'secret\llama-api-key'
-if (-not (Test-Path -LiteralPath $key)) {
-    Say 'llama-server API key missing (answer file replaced?): running install.ps1'
-    try {
-        & (Join-Path $root 'setup\install.ps1') -Phase golden-firstboot *>&1 | ForEach-Object { Say "  $_" }
-    } catch { $ok = $false; Say "install.ps1 failed: $($_.Exception.Message)" }
-}
-if (Test-Path -LiteralPath $key) { Say 'llama-server API key present' } else { $ok = $false; Say 'llama-server API key STILL missing' }
+try {
+    if (-not (Test-Path -LiteralPath $key) -or (Get-Item -LiteralPath $key).Length -lt 64) {
+        $dir = Split-Path -Parent $key
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        & icacls.exe $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' `
+            'NT SERVICE\lecore-llama:(OI)(CI)RX' 'NT SERVICE\lecore-chat:(OI)(CI)RX' /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls failed on $dir" }
+        $bytes = New-Object byte[] 32
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+        [IO.File]::WriteAllText($key, (-join ($bytes | ForEach-Object { $_.ToString('x2') })), (New-Object Text.ASCIIEncoding))
+        & icacls.exe $key /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' 'NT SERVICE\lecore-llama:R' 'NT SERVICE\lecore-chat:R' /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls failed on $key" }
+        Say "llama-server API key generated for this machine ($key)"
+    } else { Say 'llama-server API key present' }
+} catch { $ok = $false; Say "API key: $($_.Exception.Message)" }
 
 # 5. hibernation / Fast Startup back to the Windows default (the VM build turned it off for the capture) -------
 if (-not $InSpecialize) {

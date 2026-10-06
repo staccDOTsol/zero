@@ -24,7 +24,8 @@
      recognition, tailored experiences, advertising ID.
   Telemetry/remote fetching inside the stack is off by configuration (run-llama.ps1: --offline,
   --no-webui, --cors-origins localhost; lecore_plus_chat.py: Host/Origin checks, CSP; sitecustomize.py:
-  NLTK/Hugging Face offline). Provisioning and model downloads run on the imaging station.
+  NLTK/Hugging Face offline). The models ship on the disk (the golden images, golden/); nothing in the
+  stack downloads them.
 
   Modes:
     (default)            the running Windows (Administrator/SYSTEM): all of the above.
