@@ -63,6 +63,8 @@ try {
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
     Info 'Windows' ("{0} {1} build {2}.{3}, EditionID {4}" -f $os.Caption, $os.Version, $cv.CurrentBuild, $cv.UBR, $cv.EditionID)
     Check 'Windows 11 Pro' ($cv.EditionID -eq 'Professional') "EditionID $($cv.EditionID)"
+    $sb = try { [string](Confirm-SecureBootUEFI) } catch { "n/a ($($_.Exception.Message))" }
+    Info 'Secure Boot' $sb
 
     # --- generalized image, first boot ----------------------------------------------------------------
     $state = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState

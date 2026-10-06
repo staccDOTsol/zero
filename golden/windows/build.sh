@@ -162,10 +162,10 @@ vm() {
   local log=$LOGS/$name-serial.log sock=$WORK/$name.qmp
   rm -f "$log" "$sock"; mkdir -p "$LOGS/shots"
   say "VM $name: start (timeout ${tmo}s)"
-  qemu-system-x86_64 -name "zero-win-$TIER-$name" -machine q35,accel=kvm \
+  qemu-system-x86_64 -name "zero-win-$TIER-$name" -machine "${VM_MACHINE:-q35,accel=kvm}" ${VM_EXTRA:-} \
     -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time,hv_vpindex,hv_synic,hv_stimer,hv_frequencies \
     -smp "$smp" -m "${mem}G" \
-    -drive if=pflash,format=raw,unit=0,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,unit=0,readonly=on,file="${VM_CODE:-$OVMF_CODE}" \
     -drive if=pflash,format=raw,unit=1,file="$VARS" \
     -rtc base=utc -vga std -display none -serial file:"$log" -qmp unix:"$sock",server=on,wait=off \
     -device qemu-xhci -device usb-tablet "$@" &
@@ -338,6 +338,8 @@ hook = ("# ZERO GOLDEN TEST ONLY (added to a throwaway overlay by golden/windows
         "'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& C:\\zero-verify\\verify.ps1 *> C:\\zero-verify\\verify.log\"' } | Out-Null }")
 open(p, "w", encoding="utf-8", newline="").write(t.replace(mark, hook))
 PY
+overlay() { # a fresh copy-on-write overlay of the image, the size of the laptop's NVMe, with the test hook
+rm -f "$OV"
 qemu-img create -q -f qcow2 -F raw -b "$DISK" "$OV" "$NVME_BYTES"
 if modprobe nbd max_part=16 2>/dev/null && [ -e /dev/nbd0 ]; then
   qemu-nbd -c /dev/nbd0 "$OV"; udevadm settle 2>/dev/null || sleep 2; partprobe /dev/nbd0 2>/dev/null || true; sleep 2
@@ -353,11 +355,31 @@ else
   guestfish --rw -a "$OV" run : mount "$P3" / : mkdir-p /zero-verify : copy-in "$VS/zero-verify/verify.ps1" "$VS/zero-verify/expect.json" /zero-verify \
     : upload "$VS/firstboot.ps1" "/$FB" : umount-all
 fi
-cp "$OVMF_VARS" "$VARS"   # a laptop fresh from imaging: no boot entries in its firmware
-VM_START_RE=ZERO_VERIFY_STARTED VM_START_TMO=$((2700 * TS)) vm verify $((5400 * TS)) 'ZERO_VERIFY_DONE' "$VERIFY_SMP" "$VERIFY_MEM" -- \
-  -drive if=none,id=d0,file="$OV",format=qcow2,cache=unsafe,discard=unmap -device nvme,drive=d0,serial=ZEROVERIFY0001 \
-  -nic user,model=e1000e || VERIFY=FAIL
-tr -d '\r' < "$LOGS/verify-serial.log" | grep -aE '^(VERIFY|ZERO_VERIFY)' | tee "$LOGS/verify-report.txt" || true
+}
+# A laptop fresh from imaging: a firmware with no boot entries. Secure Boot on (Microsoft keys), as the
+# laptops ship; if that VM dies before the check starts, once more with Secure Boot off.
+vboot() { # name secureboot(0|1)
+  overlay
+  if [ "$2" = 1 ]; then
+    cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$VARS"
+    export VM_CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd VM_MACHINE=q35,accel=kvm,smm=on VM_EXTRA="-global driver=cfi.pflash01,property=secure,value=on"
+  else
+    cp "$OVMF_VARS" "$VARS"; unset VM_CODE VM_MACHINE VM_EXTRA
+  fi
+  VM_START_RE=ZERO_VERIFY_STARTED VM_START_TMO=$((1500 * TS)) vm "$1" $((5400 * TS)) 'ZERO_VERIFY_DONE' "$VERIFY_SMP" "$VERIFY_MEM" -- \
+    -drive if=none,id=d0,file="$OV",format=qcow2,cache=unsafe,discard=unmap -device nvme,drive=d0,serial=ZEROVERIFY0001 \
+    -nic user,model=e1000e
+}
+VSB=1; T1=$SECONDS
+vboot verify 1 || VERIFY=FAIL
+if ! grep -aq ZERO_VERIFY_STARTED "$LOGS/verify-serial.log" && [ $((SECONDS - T1)) -lt 600 ]; then
+  say "the Secure Boot VM stopped after $((SECONDS - T1)) s before the check started; retrying with Secure Boot off"
+  VERIFY=PASS; VSB=0
+  vboot verify 0 || VERIFY=FAIL
+fi
+unset VM_CODE VM_MACHINE VM_EXTRA
+echo "first boot: QEMU/KVM + OVMF, ${NVME_BYTES}-byte NVMe, Secure Boot $([ "$VSB" = 1 ] && echo on || echo off), $VERIFY_SMP vCPU / $VERIFY_MEM GiB, user-mode network" > "$LOGS/verify-boot.txt"
+{ grep -aE '^(VERIFY OK|VERIFY FAILED)' "$LOGS/models-sha256.txt"; cat "$LOGS/verify-boot.txt"; tr -d '\r' < "$LOGS/verify-serial.log" | grep -aE '^(VERIFY|ZERO_VERIFY)'; } | tee "$LOGS/verify-report.txt" || true
 grep -aq 'ZERO_VERIFY_RESULT: PASS' "$LOGS/verify-serial.log" || VERIFY=FAIL
 rm -f "$OV"
 say "first-boot verification: $VERIFY"
