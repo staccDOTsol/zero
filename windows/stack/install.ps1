@@ -113,9 +113,11 @@ function Install-WinSWService {
     Copy-Item -Force $WinSW $exe
     & $exe install
     if ($LASTEXITCODE -ne 0) { throw "WinSW install of $Id failed ($LASTEXITCODE)" }
-    # Least privilege: run as LOCAL SERVICE, not LocalSystem.
-    & sc.exe config $Id obj= 'NT AUTHORITY\LocalService' password= '' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "sc config obj= LocalService failed for $Id ($LASTEXITCODE)" }
+    # Least privilege: run as LOCAL SERVICE, not LocalSystem. (Win32_Service.Change; sc.exe cannot be
+    # handed an empty password= argument from Windows PowerShell.)
+    $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$Id'"
+    $r = Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ StartName = 'NT AUTHORITY\LocalService'; StartPassword = '' }
+    if ($r.ReturnValue -ne 0) { throw "Win32_Service.Change(StartName=LocalService) failed for $Id (return $($r.ReturnValue))" }
     & sc.exe failureflag $Id 1 | Out-Null
 }
 

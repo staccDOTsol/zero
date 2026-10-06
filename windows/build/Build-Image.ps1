@@ -41,9 +41,8 @@ $t0 = Get-Date
 function Lap([string]$m) { Write-Host ("  [{0:hh\:mm\:ss}] {1}" -f ((Get-Date) - $t0), $m) }
 
 Write-Step 'Copy the ISO files'
-$img = Mount-DiskImage -ImagePath $Iso -PassThru
+$src = Mount-IsoRoot $Iso
 try {
-    $src = "$(($img | Get-Volume).DriveLetter):\"
     & robocopy.exe $src $isoDir /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
 } finally { Dismount-DiskImage -ImagePath $Iso | Out-Null }
@@ -73,8 +72,11 @@ try {
         if (-not $p.inject_install) { continue }
         foreach ($r in $p.inject_roots) {
             Lap "Add-WindowsDriver $($p.id) <- $r"
-            $res = @(Add-WindowsDriver -Path $mount -Driver $r -Recurse -ErrorAction Stop)
+            $errs = $null
+            $res = @(Add-WindowsDriver -Path $mount -Driver $r -Recurse -ErrorAction SilentlyContinue -ErrorVariable errs)
+            foreach ($e in @($errs)) { if ($e) { Write-Warning ("    {0}" -f $e.Exception.Message) } }
             Write-Host ("    {0} driver packages added" -f $res.Count)
+            if ($res.Count -eq 0) { throw "no driver from $r could be added to the image" }
             $added += $res.Count
         }
     }
@@ -90,7 +92,7 @@ try {
     Write-Step 'Pre-apply the zero-egress lockdown to the offline image'
     $stage = Join-Path $WorkDir 'stack'
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-    Expand-Archive -LiteralPath $StackZip -DestinationPath $stage
+    Invoke-Native (Get-SevenZip) @('x', '-y', '-bso0', '-bsp0', "-o$stage", $StackZip) | Out-Null
     $stackSrc = Join-Path $stage 'lecore-plus-windows-stack'
     & (Join-Path $stackSrc 'lockdown.ps1') -OfflineImage $mount
     Lap 'offline lockdown applied'
@@ -189,9 +191,8 @@ Remove-Item -Recurse -Force $isoDir
 Lap 'iso written'
 
 Write-Step 'Verify the ISO'
-$v = Mount-DiskImage -ImagePath $outIso -PassThru
+$dl = (Mount-IsoRoot $outIso).TrimEnd('\')
 try {
-    $dl = "$(($v | Get-Volume).DriveLetter):"
     foreach ($f in 'autounattend.xml', 'setup.exe', 'sources\boot.wim', 'efi\boot\bootx64.efi') { if (-not (Test-Path "$dl\$f")) { throw "ISO is missing $f" } }
     $first = @(Get-ChildItem "$dl\sources" -File | Where-Object { $_.Name -in 'install.swm', 'install.wim' })[0].FullName
     $chk = Get-WindowsImage -ImagePath $first -Index 1

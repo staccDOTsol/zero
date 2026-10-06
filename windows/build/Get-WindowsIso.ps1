@@ -79,9 +79,8 @@ if ($Download) {
     }
 
     Write-Step 'Check the Microsoft signature inside the ISO'
-    $img = Mount-DiskImage -ImagePath $OutIso -PassThru
+    $drive = (Mount-IsoRoot $OutIso).Substring(0, 1)
     try {
-        $drive = ($img | Get-Volume).DriveLetter
         $sig = Get-AuthenticodeSignature -FilePath "${drive}:\setup.exe"
         $subject = $sig.SignerCertificate.Subject
         Write-Host "  setup.exe: $($sig.Status) $subject"

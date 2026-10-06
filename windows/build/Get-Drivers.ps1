@@ -97,8 +97,10 @@ foreach ($id in $cfg.gpu_device_ids) {
     foreach ($inf in $allInfs) {
         $ids = @([regex]::Matches($inf.Text, $rx, 'IgnoreCase') | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique)
         if (-not $ids.Count) { continue }
-        Write-Host ("  {0} | {1} | class {2} | DriverVer {3} | {4}" -f $inf.Package, (Split-Path -Leaf $inf.Path), $inf.Class, $inf.DriverVer, ($ids -join ' '))
-        $report.gpu += [ordered]@{ device = $id; package = $inf.Package; inf = $inf.Path.Substring($root.Length + 1); class = $inf.Class; driver_ver = $inf.DriverVer; hardware_ids = $ids }
+        # Does this INF install the Vulkan loader / ICD? (llama.cpp's ggml-vulkan.dll needs vulkan-1.dll)
+        $vk = @([regex]::Matches($inf.Text, '(?im)^[^;\r\n]*(vulkan-1[^\s,;"]*\.dll|Vulkan(Driver|Implicit)[A-Za-z]*)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        Write-Host ("  {0} | {1} | class {2} | DriverVer {3} | vulkan: {4} | {5}" -f $inf.Package, (Split-Path -Leaf $inf.Path), $inf.Class, $inf.DriverVer, ($vk -join ' '), ($ids -join ' '))
+        $report.gpu += [ordered]@{ device = $id; package = $inf.Package; inf = $inf.Path.Substring($root.Length + 1); class = $inf.Class; driver_ver = $inf.DriverVer; vulkan = $vk; hardware_ids = $ids }
     }
 }
 $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $root 'drivers-report.json') -Encoding utf8

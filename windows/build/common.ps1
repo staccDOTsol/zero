@@ -88,3 +88,14 @@ function Show-Disk([string]$Label = 'disk') {
         Write-Host ("  [{0}] {1}: used {2:N1} GB, free {3:N1} GB" -f $Label, $_.Name, ($_.Used / 1GB), ($_.Free / 1GB))
     }
 }
+
+function Mount-IsoRoot([string]$Iso) {
+    # Mounts an ISO and returns its root ("E:\"); the drive letter can take a moment to appear.
+    Mount-DiskImage -ImagePath $Iso | Out-Null
+    for ($i = 0; $i -lt 30; $i++) {
+        $letter = (Get-DiskImage -ImagePath $Iso | Get-Volume -ErrorAction SilentlyContinue).DriveLetter
+        if ($letter) { return "${letter}:\" }
+        Start-Sleep -Seconds 1
+    }
+    throw "mounted $Iso but it got no drive letter"
+}

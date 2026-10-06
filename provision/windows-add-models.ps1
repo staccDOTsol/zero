@@ -64,10 +64,11 @@ if ($PSCmdlet.ParameterSetName -eq 'All') { $Tier = $All }
 $Tier = $Tier.ToLowerInvariant()
 $Target = $Target.TrimEnd('\')
 if ($Target -match '^[A-Za-z]$') { $Target += ':' }
-$dataDir = Join-Path $Target 'ProgramData\leCore+'
-$modelsDir = Join-Path $dataDir 'models'
+# String paths (Join-Path refuses a drive that is not attached yet, e.g. for -DryRun)
+$dataDir = "$Target\ProgramData\leCore+"
+$modelsDir = "$dataDir\models"
 $defaultCache = -not $Cache
-if ($defaultCache) { $Cache = Join-Path $modelsDir '.download' }
+if ($defaultCache) { $Cache = "$modelsDir\.download" }
 
 Say "catalog $Catalog"
 $cat = Get-Content -Raw -LiteralPath $Catalog | ConvertFrom-Json

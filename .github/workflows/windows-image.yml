@@ -235,7 +235,7 @@ jobs:
       - name: Build the ISO
         run: |
           & .\windows\build\Build-Image.ps1 -Target ${{ matrix.target }} -Iso C:\zb\win11.iso -StackZip "$env:GITHUB_WORKSPACE\out\lecore-plus-windows-stack.zip" `
-            -DriversRoot C:\zb\drivers\${{ matrix.target }} -WorkDir C:\zb\img -OutDir C:\zb\out -Tag "$env:TAG"
+            -DriversRoot C:\zb\drivers\${{ matrix.target }} -WorkDir D:\zb\img -OutDir D:\zb\out -Tag "$env:TAG"
           Remove-Item -Force C:\zb\win11.iso
           Remove-Item -Recurse -Force C:\zb\drivers
       - name: Split into ≤1.9 GiB parts + SHA256SUMS, upload to the release
@@ -247,9 +247,9 @@ jobs:
         with:
           name: image-${{ matrix.target }}
           path: |
-            C:/zb/out/*.json
-            C:/zb/out/*.csv
-            C:/zb/out/SHA256SUMS-*.txt
+            D:/zb/out/*.json
+            D:/zb/out/*.csv
+            D:/zb/out/SHA256SUMS-*.txt
           retention-days: 30
 
   finalize:
