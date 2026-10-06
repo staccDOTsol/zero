@@ -158,8 +158,17 @@ try {
     $env:VK_LOADER_DEBUG = 'error,warn,driver'
     Write-Host (Invoke-Quiet { & $vkinfo --summary } | Select-Object -First 60 | Out-String)
     Remove-Item Env:\VK_LOADER_DEBUG
-    $devs = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices -lv 4 } | Out-String
+    # ggml-vulkan skips CPU-type Vulkan devices (lavapipe) unless they are selected explicitly. CI only:
+    # the laptops have a real GPU (Radeon 8060S iGPU is picked as the first non-CPU device; on the P16
+    # the dedicated RTX PRO 5000 is preferred).
+    $env:GGML_VK_VISIBLE_DEVICES = '0'
+    $devs = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices } | Out-String
     Write-Host $devs
+    $xmlPath = Join-Path $root 'services\lecore-llama.xml'
+    $x = Get-Content -Raw $xmlPath
+    if ($x -notmatch 'GGML_VK_VISIBLE_DEVICES') {
+        [IO.File]::WriteAllText($xmlPath, ($x -replace '</service>', "  <env name=`"GGML_VK_VISIBLE_DEVICES`" value=`"0`"/>`r`n</service>"), (New-Object Text.UTF8Encoding($false)))
+    }
     Check 'llama.cpp Vulkan backend sees a Vulkan device (Mesa lavapipe, CI only)' ($devs -match 'Vulkan\d') (($devs -split "`n" | Where-Object { $_ -match 'Vulkan|llvmpipe' }) -join ' / ')
     $mark = (Get-Content (Join-Path $logs 'lecore-llama.out.log')).Count
     Restart-Service lecore-llama
