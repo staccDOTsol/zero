@@ -69,7 +69,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for t in qemu-system-x86_64 qemu-img qemu-nbd aria2c 7z xorriso ntfs-3g sgdisk losetup zstd python3 sha256sum; do
+for t in qemu-system-x86_64 qemu-img qemu-nbd aria2c 7z xorriso ntfs-3g mkfs.vfat sgdisk losetup zstd python3 sha256sum; do
   command -v "$t" >/dev/null || die "missing tool $t"
 done
 [ -w /dev/kvm ] || die "/dev/kvm is not available: the Windows install and the boot test need KVM"
@@ -103,22 +103,30 @@ DL_PID=$!
 say "model download started in the background (pid $DL_PID, log logs/download.log)"
 
 # ---------------------------------------------------------------------------------------------------
-# 2. build ISO
+# 2. answer files and install media
 say "unpacking $(basename "$ISO")"
 rm -rf "$WORK/iso"; mkdir -p "$WORK/iso"
 7z x -y -bso0 -bsp0 -o"$WORK/iso" "$ISO" >/dev/null
-[ -f "$WORK/iso/autounattend.xml" ] && ls "$WORK/iso/sources/" | grep -qiE '^install\.(swm|wim|esd)$' || die "ISO does not look like a Zero Windows ISO"
+[ -f "$WORK/iso/autounattend.xml" ] && compgen -G "$WORK/iso/sources/install.*" >/dev/null || die "ISO does not look like a Zero Windows ISO"
 cp "$WORK/iso/autounattend.xml" "$WORK/iso-autounattend.xml"
 cat "$WORK/iso/zero-image.json" > "$WORK/zero-image.json" 2>/dev/null || echo '{}' > "$WORK/zero-image.json"
-python3 "$HERE/unattend.py" build "$WORK/iso-autounattend.xml" "$WORK/iso/autounattend.xml"
+python3 "$HERE/unattend.py" build "$WORK/iso-autounattend.xml" "$WORK/build-autounattend.xml"
 python3 "$HERE/unattend.py" shipped "$WORK/iso-autounattend.xml" "$WORK/shipped-unattend.xml"
+# media A: the ISO's own files as an ISO 9660 + Joliet DVD with the build answer file at its root and
+# the no-prompt UEFI boot image (no "Press any key to boot from CD")
+cp "$WORK/build-autounattend.xml" "$WORK/iso/autounattend.xml"
 EFI_IMG=efi/microsoft/boot/efisys_noprompt.bin
 NOPROMPT=1
 if [ ! -f "$WORK/iso/$EFI_IMG" ]; then EFI_IMG=efi/microsoft/boot/efisys.bin; NOPROMPT=0; fi
 xorriso -as mkisofs -iso-level 3 -J -joliet-long -V ZERO_GOLDEN -o "$WORK/build.iso" \
   -e "$EFI_IMG" -no-emul-boot "$WORK/iso" 2>&1 | tail -n 2
 rm -rf "$WORK/iso"
-say "build ISO $(du -h "$WORK/build.iso" | cut -f1) (UEFI boot image $EFI_IMG)"
+say "media A: build ISO $(du -h "$WORK/build.iso" | cut -f1) (UEFI boot image $EFI_IMG)"
+# media B (fallback): the original ISO untouched, the build answer file on a small USB stick (Windows
+# Setup takes an answer file on removable read/write media before the one on the DVD)
+rm -f "$WORK/answer.img"; mkfs.vfat -n ZEROANSWER -C "$WORK/answer.img" 32768 >/dev/null
+mkdir -p "$WORK/answer-mnt"; mount -o loop "$WORK/answer.img" "$WORK/answer-mnt"
+cp "$WORK/build-autounattend.xml" "$WORK/answer-mnt/Autounattend.xml"; umount "$WORK/answer-mnt"
 
 # ---------------------------------------------------------------------------------------------------
 # QEMU
@@ -140,6 +148,7 @@ print(json.dumps(x(cmd, args)))
 PY
 }
 # vm NAME TIMEOUT_S DONE_REGEX SMP MEM_G -- extra qemu args
+# (VM_START_RE / VM_START_TMO: give up early if the serial log never shows VM_START_RE)
 vm() {
   local name=$1 tmo=$2 done_re=$3 smp=$4 mem=$5; shift 6
   local log=$LOGS/$name-serial.log sock=$WORK/$name.qmp
@@ -159,6 +168,9 @@ vm() {
       sleep 20; kill -0 "$pid" 2>/dev/null && { qmp "$sock" screendump "{\"filename\": \"$LOGS/shots/$name-end.png\", \"format\": \"png\"}" >/dev/null 2>&1; sleep 60; }
       kill -0 "$pid" 2>/dev/null && { qmp "$sock" quit >/dev/null 2>&1 || kill "$pid"; }
       break
+    fi
+    if [ -n "${VM_START_RE:-}" ] && [ "$t" -ge "${VM_START_TMO:-1800}" ] && ! grep -aqE "$VM_START_RE" "$log" 2>/dev/null; then
+      say "VM $name: '$VM_START_RE' not seen after ${t}s"; tmo=$t
     fi
     if [ "$t" -ge "$tmo" ]; then
       say "VM $name: TIMEOUT after ${t}s"
@@ -188,18 +200,31 @@ detach() { sync; mountpoint -q "$MNT" && umount "$MNT"; [ -n "$LOOP" ] && losetu
 
 # ---------------------------------------------------------------------------------------------------
 # 3. Windows Setup -> audit mode -> sysprep, in a VM whose only disk is the image
-rm -f "$DISK"; truncate -s "$DISK_BYTES" "$DISK"
-cp "$OVMF_VARS" "$VARS"
 DISKDEV=(-drive if=none,id=d0,file="$DISK",format=raw,cache=unsafe,discard=unmap,detect-zeroes=unmap -device nvme,drive=d0,serial=ZEROGOLDEN0001,bootindex=1)
-CD=(-drive if=none,id=cd0,file="$WORK/build.iso",format=raw,media=cdrom,readonly=on -device ide-cd,drive=cd0,bus=ide.0,bootindex=0)
 SETUP_SMP=16 SETUP_MEM=32
-( [ "$NOPROMPT" = 1 ] || { sleep 3; press_keys "$WORK/setup-1.qmp"; } ) &
-vm setup-1 3600 "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" "${CD[@]}" -nic none -no-reboot || die "Windows Setup (windowsPE pass) did not finish"
-sgdisk -p "$DISK" | tail -n 5
+setup_pe() { # A|B: Windows Setup's windowsPE pass (partitions the disk, applies Windows, reboots)
+  local m=$1 media
+  rm -f "$DISK"; truncate -s "$DISK_BYTES" "$DISK"; cp "$OVMF_VARS" "$VARS"
+  if [ "$m" = A ]; then
+    media=(-drive if=none,id=cd0,file="$WORK/build.iso",format=raw,media=cdrom,readonly=on -device ide-cd,drive=cd0,bus=ide.0,bootindex=0)
+    [ "$NOPROMPT" = 1 ] || { sleep 3; press_keys "$WORK/setup-1$m.qmp"; } &
+  else
+    media=(-drive if=none,id=cd0,file="$ISO",format=raw,media=cdrom,readonly=on -device ide-cd,drive=cd0,bus=ide.0,bootindex=0
+           -drive if=none,id=ans,file="$WORK/answer.img",format=raw -device usb-storage,drive=ans,removable=on)
+    { sleep 3; press_keys "$WORK/setup-1$m.qmp"; } &
+  fi
+  vm "setup-1$m" 1800 "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" "${media[@]}" -nic none -no-reboot || return 1
+  sgdisk -p "$DISK" | tail -n 5
+  attach
+  if [ -z "$WINPART" ] || ! ntfs-3g -o ro "$WINPART" "$MNT" 2>/dev/null; then detach; return 1; fi
+  if [ ! -f "$MNT/Windows/System32/config/SYSTEM" ]; then detach; return 1; fi
+  detach
+}
+setup_pe A || { say "media A did not install Windows; trying media B (original ISO + answer-file stick)"; setup_pe B; } \
+  || die "Windows Setup (windowsPE pass) did not apply Windows (see logs/shots)"
+rm -f "$WORK/build.iso" "$WORK/answer.img"
 attach
-[ -n "$WINPART" ] || die "no NTFS partition after the windowsPE pass (Setup failed; see logs/shots)"
 ntfs-3g "$WINPART" "$MNT"
-[ -f "$MNT/Windows/System32/config/SYSTEM" ] || die "Windows was not applied to the disk"
 G=$MNT/Windows/Setup/Scripts/zero-golden
 mkdir -p "$G"
 cp "$HERE/audit.ps1" "$HERE/firstboot.ps1" "$WORK/shipped-unattend.xml" "$G/"
@@ -207,7 +232,7 @@ say "Windows applied ($(df -h "$MNT" | awk 'NR==2{print $3}') used); golden scri
 detach
 
 for n in 2 3 4 5 6; do
-  vm "setup-$n" 5400 "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" -nic none -no-reboot || die "VM setup-$n timed out"
+  vm "setup-$n" 2700 "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" -nic none -no-reboot || die "VM setup-$n timed out"
   grep -a 'zero-golden audit' "$LOGS/setup-$n-serial.log" 2>/dev/null | tr -d '\r' || true
   grep -aq 'ZERO_AUDIT_FAIL' "$LOGS/setup-$n-serial.log" && die "audit mode check failed (see above)"
   grep -aq 'ZERO_SYSPREP_RUN' "$LOGS/setup-$n-serial.log" && break
@@ -220,7 +245,6 @@ cp "$MNT/Windows/Setup/Scripts/lecore-plus-specialize.log" "$LOGS/" 2>/dev/null 
 [ -f "$MNT/Windows/System32/Sysprep/Sysprep_succeeded.tag" ] || die "sysprep did not succeed (logs/sysprep-setupact.log, logs/audit.log)"
 say "sysprep /generalize /oobe succeeded"
 detach
-rm -f "$WORK/build.iso"
 
 # ---------------------------------------------------------------------------------------------------
 # 4. models into the image
@@ -263,8 +287,9 @@ sync; echo 3 > /proc/sys/vm/drop_caches
 attach
 ntfs-3g -o ro "$WINPART" "$MNT"
 say "re-reading every model file from the image (ntfs-3g, read-only, cold cache) and checking sha256"
-python3 "$REPO/golden/lib/catalog.py" --catalog "$CATALOG" verify "$TIER" "$MNT/ProgramData/leCore+/models" -j 8 | tee "$LOGS/models-sha256.txt"
-[ "${PIPESTATUS[0]}" = 0 ] || die "model files in the image do not match the catalog"
+if ! python3 "$REPO/golden/lib/catalog.py" --catalog "$CATALOG" verify "$TIER" "$MNT/ProgramData/leCore+/models" -j 8 | tee "$LOGS/models-sha256.txt"; then
+  die "model files in the image do not match the catalog"
+fi
 cat "$MNT/ProgramData/leCore+/model.txt"
 detach
 
@@ -272,14 +297,9 @@ detach
 # 5. first-boot verification on a throwaway overlay the size of the laptop's NVMe
 VERIFY=PASS
 OV=$WORK/verify.qcow2
-qemu-img create -q -f qcow2 -F raw -b "$DISK" "$OV" "$NVME_BYTES"
-modprobe nbd max_part=16
-qemu-nbd -c /dev/nbd0 "$OV"; udevadm settle 2>/dev/null || sleep 2; partprobe /dev/nbd0 2>/dev/null || true; sleep 2
-VPART=$(ntfs_part /dev/nbd0)
-ntfs-3g "$VPART" "$MNT"
-mkdir -p "$MNT/zero-verify"
-cp "$HERE/verify.ps1" "$MNT/zero-verify/"
-python3 - "$REPO/golden/lib/catalog.py" "$CATALOG" "$TIER" "$TARGET" "$VENDOR" "$NVME_BYTES" "$DISK_BYTES" "$MNT/zero-verify/expect.json" <<'PY'
+VS=$WORK/verify-stage; rm -rf "$VS"; mkdir -p "$VS/zero-verify"
+cp "$HERE/verify.ps1" "$VS/zero-verify/"
+python3 - "$REPO/golden/lib/catalog.py" "$CATALOG" "$TIER" "$TARGET" "$VENDOR" "$NVME_BYTES" "$DISK_BYTES" "$VS/zero-verify/expect.json" <<'PY'
 import json, subprocess, sys
 tool, cat, tier, target, vendor, nvme, img, out = sys.argv[1:9]
 s = json.loads(subprocess.check_output([sys.executable, tool, "--catalog", cat, "summary", tier]))
@@ -291,9 +311,11 @@ json.dump({"tier": tier, "target": target, "display_vendor": vendor, "disk_bytes
            "default": s["default"], "default_file": s["default_file"], "models": s["models"], "files": files},
           open(out, "w"), indent=1)
 PY
-SC=$MNT/Windows/Setup/Scripts/SetupComplete.cmd
-[ -f "$SC" ] || printf '@echo off\r\n' > "$SC"
-python3 - "$SC" <<'PY'
+# the test hook: the image's own SetupComplete.cmd with one line added at the top (overlay only)
+attach; ntfs-3g -o ro "$WINPART" "$MNT"
+cat "$MNT/Windows/Setup/Scripts/SetupComplete.cmd" > "$VS/SetupComplete.cmd" 2>/dev/null || printf '@echo off\r\n' > "$VS/SetupComplete.cmd"
+detach
+python3 - "$VS/SetupComplete.cmd" <<'PY'
 import sys
 p = sys.argv[1]
 t = open(p, encoding="utf-8", errors="replace").read()
@@ -304,9 +326,23 @@ lines = t.split("\n")
 i = 1 if lines and lines[0].strip().lower() == "@echo off" else 0
 open(p, "w", encoding="utf-8", newline="").write("\n".join(lines[:i]) + ("\n" if i else "") + hook + "\n".join(lines[i:]))
 PY
-umount "$MNT"; qemu-nbd -d /dev/nbd0 >/dev/null
+qemu-img create -q -f qcow2 -F raw -b "$DISK" "$OV" "$NVME_BYTES"
+if modprobe nbd max_part=16 2>/dev/null && [ -e /dev/nbd0 ]; then
+  qemu-nbd -c /dev/nbd0 "$OV"; udevadm settle 2>/dev/null || sleep 2; partprobe /dev/nbd0 2>/dev/null || true; sleep 2
+  ntfs-3g "$(ntfs_part /dev/nbd0)" "$MNT"
+  cp -r "$VS/zero-verify" "$MNT/"
+  cp "$VS/SetupComplete.cmd" "$MNT/Windows/Setup/Scripts/SetupComplete.cmd"
+  umount "$MNT"; qemu-nbd -d /dev/nbd0 >/dev/null
+else
+  say "no nbd module: writing the test hook into the overlay with guestfish"
+  apt-get install -y -qq libguestfs-tools >/dev/null 2>&1 || true
+  chmod 0644 /boot/vmlinuz-* 2>/dev/null || true
+  P3=$(guestfish --ro -a "$OV" run : list-filesystems | awk -F: '/ntfs/{print $1}' | tail -n 1)
+  guestfish --rw -a "$OV" run : mount "$P3" / : mkdir-p /zero-verify : copy-in "$VS/zero-verify/verify.ps1" "$VS/zero-verify/expect.json" /zero-verify \
+    : upload "$VS/SetupComplete.cmd" /Windows/Setup/Scripts/SetupComplete.cmd : umount-all
+fi
 cp "$OVMF_VARS" "$VARS"   # a laptop fresh from imaging: no boot entries in its firmware
-vm verify 7200 'ZERO_VERIFY_DONE' 32 96 -- \
+VM_START_RE=ZERO_VERIFY_STARTED VM_START_TMO=2700 vm verify 5400 'ZERO_VERIFY_DONE' 32 96 -- \
   -drive if=none,id=d0,file="$OV",format=qcow2,cache=unsafe,discard=unmap -device nvme,drive=d0,serial=ZEROVERIFY0001 \
   -nic user,model=e1000e || VERIFY=FAIL
 tr -d '\r' < "$LOGS/verify-serial.log" | grep -aE '^(VERIFY|ZERO_VERIFY)' | tee "$LOGS/verify-report.txt" || true
