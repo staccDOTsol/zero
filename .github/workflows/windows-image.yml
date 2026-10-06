@@ -52,6 +52,7 @@ jobs:
     outputs:
       mode: ${{ steps.m.outputs.mode }}
       tag: ${{ steps.m.outputs.tag }}
+      wip: ${{ steps.m.outputs.wip }}
       targets: ${{ steps.m.outputs.targets }}
       publish: ${{ steps.m.outputs.publish }}
     steps:
@@ -64,6 +65,10 @@ jobs:
         run: |
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "tag=windows-$(date -u +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          # assets are uploaded to a "wip-windows-..." release first; finalize renames it to windows-...
+          # only when every image is in, so nothing that picks "the latest windows-* release"
+          # (golden-stage) ever sees a half-uploaded one. (GITHUB_TOKEN cannot create draft releases here.)
+          echo "wip=wip-windows-$(date -u +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           echo "targets=$(python3 -c 'import json,os; print(json.dumps([t.strip() for t in os.environ["TARGETS"].split(",") if t.strip()]))')" >> "$GITHUB_OUTPUT"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
@@ -167,6 +172,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.meta.outputs.tag }}
+      WIP: ${{ needs.meta.outputs.wip }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -175,13 +181,14 @@ jobs:
       - name: Create release + upload the stack zip
         shell: bash
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            # a DRAFT until every image is uploaded (finalize publishes it), so nothing that picks
-            # "the latest windows-* release" (e.g. golden-stage) ever sees a half-uploaded one
-            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Zero Windows images $TAG" \
-              --notes "Building (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG is already published; re-run from a new commit"; exit 1
           fi
-          gh release upload "$TAG" out/lecore-plus-windows-stack.zip out/lecore-plus-windows-stack.zip.sha256 --clobber
+          if ! gh release view "$WIP" >/dev/null 2>&1; then
+            gh release create "$WIP" --target "$GITHUB_SHA" --title "Zero Windows images $TAG (building)" --latest=false \
+              --notes "Building (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). Becomes $TAG when every image is uploaded."
+          fi
+          gh release upload "$WIP" out/lecore-plus-windows-stack.zip out/lecore-plus-windows-stack.zip.sha256 --clobber
 
   image:
     needs: [meta, stack, smoke, iso, release]
@@ -198,6 +205,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.meta.outputs.tag }}
+      WIP: ${{ needs.meta.outputs.wip }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -242,7 +250,7 @@ jobs:
           Remove-Item -Recurse -Force C:\zb\drivers
       - name: Split into ≤1.9 GiB parts + SHA256SUMS, upload to the release
         run: |
-          $tag = if ('${{ needs.meta.outputs.publish }}' -eq 'true') { $env:TAG } else { '' }
+          $tag = if ('${{ needs.meta.outputs.publish }}' -eq 'true') { $env:WIP } else { '' }
           & .\windows\build\Publish-Parts.ps1 -Iso $env:ZERO_ISO -Target ${{ matrix.target }} -Tag $tag
       - uses: actions/upload-artifact@v4
         if: always()
@@ -262,6 +270,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.meta.outputs.tag }}
+      WIP: ${{ needs.meta.outputs.wip }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -296,11 +305,12 @@ jobs:
           print(f"Built by {run}")
           PY
           cat notes.md
-          gh release upload "$TAG" SHA256SUMS --clobber
-          gh release edit "$TAG" --notes-file notes.md
+          gh release upload "$WIP" SHA256SUMS --clobber
+          gh release edit "$WIP" --notes-file notes.md
           if [ "${{ needs.image.result }}" = success ]; then
-            gh release edit "$TAG" --draft=false --latest=false
-            echo "published $TAG"
+            gh release edit "$WIP" --tag "$TAG" --title "Zero Windows images $TAG"
+            gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$WIP" >/dev/null 2>&1 || true
+            gh release view "$TAG" --json tagName,isDraft,assets -q '"published \(.tagName): \(.assets | length) assets, draft=\(.isDraft)"'
           else
-            echo "::warning::image jobs did not all succeed (${{ needs.image.result }}); $TAG stays a draft"
+            echo "::warning::image jobs did not all succeed (${{ needs.image.result }}); the assets stay under $WIP"
           fi
