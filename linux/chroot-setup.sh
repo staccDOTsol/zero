@@ -96,6 +96,25 @@ modinfo "$NVKO" | grep -E '^(filename|version|license|vermagic|signer|sig_key):'
 rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
 
 # ------------------------------------------------------------------------------------------------
+log "Firmware evidence for the three laptops"
+fwcheck() { # module regex -> lists the firmware files the module declares that match, and whether present
+  local mod=$1 re=$2 miss=0 n=0 f
+  for f in $(modinfo -k "$KVER" -F firmware "$mod" 2>/dev/null | grep -E "$re" | sort -u); do
+    n=$((n + 1))
+    if ls /lib/firmware/"$f"* >/dev/null 2>&1; then echo "  ok      $f"; else echo "  MISSING $f"; miss=$((miss + 1)); fi
+  done
+  echo "  $mod [$re]: $n declared, $miss missing"
+  return "$miss"
+}
+echo "AMD Strix Halo (gfx1151 = GC 11.5.1):"
+fwcheck amdgpu '11_5_1' || { echo "FATAL: gfx1151 firmware missing"; exit 1; }
+fwcheck amdgpu 'dcn_3_5|vcn_4_0_[56]|psp_14_0|sdma_6_1|smu_14_0' || echo "  (some optional AMD APU firmware missing)"
+echo "Intel Arrow Lake graphics:"; fwcheck i915 'mtl_|arl_' || true; fwcheck xe 'mtl_|arl_|lnl_' || true
+echo "Wi-Fi:"; fwcheck iwlwifi 'gl-c0-fm|bz-b0-fm|bz-b0-gf|sc-a0' || true
+fwcheck mt7925e 'mt7925' || true; fwcheck ath12k 'WCN7850' || true
+echo "NVIDIA GSP firmware:"; ls -la /lib/firmware/nvidia/*/ 2>/dev/null | head -n 20
+
+# ------------------------------------------------------------------------------------------------
 log "Removing / refusing packages that phone home"
 UNWANTED="unattended-upgrades popularity-contest apt-listchanges reportbug avahi-daemon avahi-autoipd
   cups-browsed gnome-software packagekit packagekit-tools flatpak snapd systemd-timesyncd ntpsec chrony

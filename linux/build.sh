@@ -22,7 +22,7 @@ R=$WORK/root
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
-for t in mmdebstrap sgdisk mkfs.vfat mkfs.ext4 losetup curl git sha256sum; do
+for t in mmdebstrap sgdisk mkfs.vfat mkfs.ext4 losetup curl git sha256sum dpkg-deb python3; do
   command -v "$t" >/dev/null || die "missing host tool: $t"
 done
 
@@ -54,6 +54,10 @@ fetch() { # url dest sha256
 fetch "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_ASSET" \
       "$DL/$LLAMA_ASSET" "$LLAMA_SHA256"
 fetch "$NVIDIA_REPO_URL/$NVIDIA_KEYRING_DEB" "$DL/$NVIDIA_KEYRING_DEB" "$NVIDIA_KEYRING_SHA256"
+fetch "$DEBIAN_KEYRING_DEB_URL" "$DL/debian-archive-keyring.deb" "$DEBIAN_KEYRING_DEB_SHA256"
+rm -rf "$DL/dak" && dpkg-deb -x "$DL/debian-archive-keyring.deb" "$DL/dak"
+DEBIAN_KEYRING=$DL/dak/usr/share/keyrings/debian-archive-keyring.gpg
+[ -s "$DEBIAN_KEYRING" ] || die "debian-archive-keyring.gpg not found in the keyring package"
 
 if [ ! -d "$DL/lecore/.git" ]; then
   rm -rf "$DL/lecore"
@@ -103,7 +107,8 @@ log "Bootstrapping Debian $DEBIAN_SUITE (minbase)"
 mmdebstrap --mode=root --variant=minbase --format=directory \
   --components="$DEBIAN_COMPONENTS" \
   --aptopt='Acquire::Retries "5"' \
-  --include=ca-certificates \
+  --keyring="$DEBIAN_KEYRING" \
+  --include=ca-certificates,debian-archive-keyring \
   "$DEBIAN_SUITE" "$R" \
   "deb $DEBIAN_MIRROR $DEBIAN_SUITE $DEBIAN_COMPONENTS"
 mkdir -p "$R/boot/efi"
