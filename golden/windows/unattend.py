@@ -100,11 +100,17 @@ def build(text):
 def shipped(text):
     pe = settings_block(text, "windowsPE")
     text = text[:pe.start()] + text[pe.end():]
+    # The stack is installed before sysprep, so the image does not re-run install.ps1 in specialize:
+    # there it stops at Win32_Service.Change ("Provider failure", WMI) after removing the services. The
+    # per-machine API key comes from the first-boot task (firstboot.ps1 runs install.ps1 in full Windows).
+    text, n = re.subn(r'[ \t]*<RunSynchronousCommand wcm:action="add">(?:(?!</RunSynchronousCommand>).)*?lecore-plus\\install\.ps1.*?</RunSynchronousCommand>[ \t]*\r?\n', '', text, flags=re.S)
+    if n != 1:
+        sys.exit("expected one install.ps1 command in the specialize pass, found %d" % n)
     note = ("<!--\n  Zero golden image: the answer file sysprep /generalize /oobe left in the image\n"
             "  (golden/windows/unattend.py shipped = the ISO's autounattend.xml without its windowsPE pass).\n"
-            "  On each laptop's first boot: specialize (unique SID, PnP with the injected drivers, the Zero\n"
-            "  stack re-check + a fresh per-machine llama-server API key), then OOBE (owner creates the account).\n-->\n")
-    return re.sub(r"(<unattend )", note + r"\1", text, count=1)
+            "  On each laptop's first boot: specialize (unique SID, PnP with the injected drivers), then OOBE\n"
+            "  (owner creates the account); the \\Zero\\Zero golden first boot task makes the per-machine API key.\n-->\n")
+    return re.sub(r"(<unattend )", lambda m: note + m.group(1), text, count=1)
 
 
 def main():
