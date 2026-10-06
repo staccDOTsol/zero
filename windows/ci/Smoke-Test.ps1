@@ -180,4 +180,5 @@ $md = @('### Smoke test (GitHub Actions Windows runner, lockdown skipped)', '', 
 $md -join "`n" | Set-Content -LiteralPath $Report -Encoding utf8
 if ($env:GITHUB_STEP_SUMMARY) { $md -join "`n" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8 }
 foreach ($l in 'lecore-chat.out.log', 'lecore-chat.err.log', 'lecore-llama.out.log', 'lecore-llama.err.log') { Write-Host "---- $l"; Write-Host (Tail (Join-Path $logs $l) 60) }
-if ($script:Failed) { throw "$script:Failed smoke check(s) failed" }
+if ($script:Failed) { Write-Host "::error::$script:Failed smoke check(s) failed"; exit 1 }
+exit 0   # (the lockdown guard check leaves $LASTEXITCODE = 1 on purpose)
