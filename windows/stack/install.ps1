@@ -75,6 +75,31 @@ function Grant-LocalService([string]$Path, [string]$Rights) {
     if ($LASTEXITCODE -ne 0) { throw "icacls failed on $Path" }
 }
 
+function Set-LlamaApiKey([string]$KeyFile) {
+    # Per-machine API key for llama-server on 127.0.0.1:8080. A web page that DNS-rebinds its own name
+    # to 127.0.0.1 could otherwise use the model. 256 random bits from the OS CSPRNG; created once per
+    # install (Windows Setup's specialize pass on each laptop), kept on re-runs. Readable only by the
+    # two Zero services (their service SIDs NT SERVICE\lecore-llama / NT SERVICE\lecore-chat), SYSTEM
+    # and Administrators; not by other LOCAL SERVICE services and not by users.
+    $dir = Split-Path -Parent $KeyFile
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    & icacls.exe $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' `
+        'NT SERVICE\lecore-llama:(OI)(CI)RX' 'NT SERVICE\lecore-chat:(OI)(CI)RX' /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on $dir" }
+    $fresh = $false
+    if (-not (Test-Path -LiteralPath $KeyFile) -or (Get-Item -LiteralPath $KeyFile).Length -lt 64) {
+        $bytes = New-Object byte[] 32
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+        $hex = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+        [IO.File]::WriteAllText($KeyFile, $hex, (New-Object Text.ASCIIEncoding))
+        $fresh = $true
+    }
+    & icacls.exe $KeyFile /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' 'NT SERVICE\lecore-llama:R' 'NT SERVICE\lecore-chat:R' /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on $KeyFile" }
+    Say ("llama-server API key: {0} ({1})" -f $KeyFile, $(if ($fresh) { 'generated for this machine' } else { 'kept' }))
+}
+
 function ConvertTo-XmlText([string]$s) { [Security.SecurityElement]::Escape($s) }
 
 function Write-WinSWConfig {
@@ -120,6 +145,9 @@ function Install-WinSWService {
     $r = Invoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ StartName = 'NT AUTHORITY\LocalService'; StartPassword = '' }
     if ($r.ReturnValue -ne 0) { throw "Win32_Service.Change(StartName=LocalService) failed for $Id (return $($r.ReturnValue))" }
     & sc.exe failureflag $Id 1 | Out-Null
+    # Give the service its own SID (NT SERVICE\<id>) in its token, so files can be shared with just it.
+    & sc.exe sidtype $Id unrestricted | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc sidtype $Id unrestricted failed ($LASTEXITCODE)" }
 }
 
 function Remove-ServiceIfPresent([string]$Id, [string]$ServicesDir) {
@@ -264,15 +292,17 @@ try {
     if (-not (Test-Path -LiteralPath $winsw)) { $winsw = Join-Path $svcDir 'WinSW.exe' }   # re-run from setup\
     else { Copy-Item -Force $winsw (Join-Path $svcDir 'WinSW.exe') }
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $keyFile = Join-Path $DataRoot 'secret\llama-api-key'
 
     Write-WinSWConfig -Path (Join-Path $svcDir 'lecore-llama.xml') -Id 'lecore-llama' `
         -Name "$ProductName model server (llama.cpp)" `
         -Description 'llama.cpp llama-server (Vulkan) on 127.0.0.1:8080 for the model named in C:\ProgramData\leCore+\model.txt. With no model configured it only waits (nothing listens).' `
         -Executable $ps -Arguments ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $binDir 'run-llama.ps1')) `
-        -WorkDir (Join-Path $DataRoot 'work') -Env @{ LECORE_PLUS_DATA = $DataRoot; LECORE_PLUS_ROOT = $InstallRoot }
+        -WorkDir (Join-Path $DataRoot 'work') -Env @{ LECORE_PLUS_DATA = $DataRoot; LECORE_PLUS_ROOT = $InstallRoot; LECORE_PLUS_LLM_KEY_FILE = $keyFile }
 
     $chatEnv = @{
         LECORE_LLM_URL     = 'http://127.0.0.1:8080/v1'
+        LECORE_PLUS_LLM_KEY_FILE = $keyFile
         LECORE_PARTITION   = $memory
         LECORE_PLUS_DATA   = $DataRoot
         LECORE_PLUS_ROOT   = $InstallRoot
@@ -292,6 +322,7 @@ try {
 
     Install-WinSWService -Id 'lecore-llama' -ServicesDir $svcDir -WinSW $winsw
     Install-WinSWService -Id 'lecore-chat' -ServicesDir $svcDir -WinSW $winsw
+    Set-LlamaApiKey $keyFile
 
     Say "Start menu + sign-in app window ($ProductName)"
     $edge = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'

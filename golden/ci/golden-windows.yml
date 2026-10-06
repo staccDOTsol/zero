@@ -1,0 +1,70 @@
+name: golden-windows
+# Zero Windows golden images: one generalized (sysprep'd) full-disk image per tier with EVERY catalog
+# model of the tier inside, verified on its first boot in QEMU/KVM, streamed to the private bucket.
+# Source of truth: staccDOTsol/lecore-plus golden/ (golden/build-golden.sh copies it here).
+# The Windows ISO comes from s3://BUCKET/base/windows/<tag>/ (staged by lecore-plus's golden-stage
+# workflow: the ISOs exist only in that private repo).
+on:
+  workflow_dispatch:
+    inputs:
+      windows_tag: { description: "Windows base release tag (staged to s3://BUCKET/base/windows/<tag>/)", required: true }
+      tiers: { description: "JSON list of tiers", default: '["pro","max","ultra"]' }
+      upload: { description: "upload the image to S3", type: boolean, default: true }
+permissions: { contents: read }
+jobs:
+  golden:
+    strategy:
+      fail-fast: false
+      matrix: { tier: "${{ fromJSON(inputs.tiers) }}" }
+    runs-on: zero-golden-32
+    timeout-minutes: 355
+    env:
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      BUCKET: zero-golden-images-143795940981
+      TIER: ${{ matrix.tier }}
+      WIN_TAG: ${{ inputs.windows_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machine
+        run: |
+          nproc; free -g; df -h; ls -l /dev/kvm
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils ovmf aria2 p7zip-full xorriso ntfs-3g gdisk zstd >/dev/null
+          qemu-system-x86_64 --version | head -n1; aria2c --version | head -n1; command -v aws && aws --version
+          sudo modprobe ntfs3 && echo "ntfs3 kernel driver available" || echo "no ntfs3: ntfs-3g will be used"
+      - name: Work dir on the biggest disk
+        run: |
+          BIG=$(df --output=avail,target -B1 -x tmpfs -x devtmpfs | tail -n +2 | sort -n | tail -1 | awk '{print $2}')
+          sudo mkdir -p "$BIG/zero-work"; sudo chown "$USER" "$BIG/zero-work"
+          echo "WORK=$BIG/zero-work" >> "$GITHUB_ENV"; df -h "$BIG"
+      - name: Windows ISO for the laptop (from S3, sha256-checked)
+        run: |
+          set -euo pipefail
+          case "$TIER" in pro|max) T=hp-zbook-ultra-g1a ;; ultra) T=lenovo-p16-gen3 ;; esac
+          cd "$WORK"
+          aws s3 cp "s3://$BUCKET/base/windows/$WIN_TAG/SHA256SUMS-$T.txt" sums.txt --only-show-errors
+          ISO=$(awk '$2 ~ /\.iso$/ {print $2}' sums.txt)
+          for p in $(awk '$2 ~ /\.iso\.part[0-9]+$/ {print $2}' sums.txt); do
+            aws s3 cp "s3://$BUCKET/base/windows/$WIN_TAG/$p" "$p" --only-show-errors
+          done
+          grep -E '\.part[0-9]+$' sums.txt | sha256sum -c -
+          cat "$ISO".part* > "$ISO" && rm -f "$ISO".part*
+          grep -E '\.iso$' sums.txt | sha256sum -c -
+          echo "ISO=$WORK/$ISO" >> "$GITHUB_ENV"
+      - name: Build, verify, upload (golden/windows/build.sh)
+        run: |
+          UP=--no-upload; [ "${{ inputs.upload }}" = true ] && UP=
+          sudo -E golden/windows/build.sh --tier "$TIER" --iso "$ISO" --work "$WORK/w" \
+            --bucket "$BUCKET" --prefix "windows/$WIN_TAG" --base-tag "$WIN_TAG" $UP
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-windows-${{ matrix.tier }}-logs
+          path: |
+            ${{ env.WORK }}/w/logs/
+            ${{ env.WORK }}/w/manifest.json
+          if-no-files-found: ignore
+          retention-days: 14

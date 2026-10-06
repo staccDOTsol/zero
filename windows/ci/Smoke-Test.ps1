@@ -10,6 +10,7 @@
     4. provision\windows-add-models.ps1 -All pro with a test catalog (tiny test GGUF, never shipped):
        download, sha256 check, copy, model.txt; plus -DryRun against the real models/catalog.json per tier
     5. llama service with the model: /v1/models lists it, /v1/chat/completions answers
+    5b. the per-machine API key: no key / wrong key -> 401, key -> 200; key file ACL; key not on the command line
     6. chat -> model rung: a question memory cannot answer is answered by llama-server
     7. the chat process attempted no non-loopback connection or DNS lookup (in-process egress guard)
     8. lockdown.ps1 -WhatIf lists its actions and changes nothing; the full lockdown refuses on CI
@@ -35,17 +36,25 @@ function Check([string]$Name, [bool]$Ok, [string]$Evidence) {
     Write-Host ("[{0}] {1} -- {2}" -f $tag, $Name, $Evidence)
     $script:Rows.Add(("| {0} | {1} | {2} |" -f $tag, $Name, ($Evidence -replace '\|', '/' -replace "`r?`n", ' ')))
 }
-function Wait-Http([string]$Url, [int]$Seconds) {
+function Wait-Http([string]$Url, [int]$Seconds, [hashtable]$Headers = @{}) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
-        try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Uri $Url; if ($r.StatusCode -eq 200) { return $r } } catch { }
+        try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Uri $Url -Headers $Headers; if ($r.StatusCode -eq 200) { return $r } } catch { }
         Start-Sleep -Seconds 2
     }
     return $null
 }
-function Post-Json([string]$Url, $Body, [int]$Timeout = 300) {
+function Post-Json([string]$Url, $Body, [int]$Timeout = 300, [hashtable]$Headers = @{}) {
     $json = $Body | ConvertTo-Json -Depth 5 -Compress
-    Invoke-RestMethod -Method Post -Uri $Url -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec $Timeout
+    Invoke-RestMethod -Method Post -Uri $Url -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec $Timeout -Headers $Headers
+}
+function Get-KeyHeader {
+    # the per-machine llama-server API key (Administrators may read it; the runner user is one)
+    @{ Authorization = 'Bearer ' + (Get-Content -Raw -LiteralPath (Join-Path $env:ProgramData 'leCore+\secret\llama-api-key')).Trim() }
+}
+function Get-Code([string]$Url, [string[]]$More = @()) {
+    $o = (& (Join-Path $env:SystemRoot 'System32\curl.exe') -s -o NUL -w '%{http_code}' --max-time 30 @More $Url) | Out-String
+    return $o.Trim()
 }
 function Invoke-Quiet([scriptblock]$Block) {
     # Windows PowerShell 5.1 turns a native command's stderr into terminating errors under 'Stop' when redirected.
@@ -126,14 +135,30 @@ if (Test-Path $realCat) {
 }
 
 # 5. llama with the model (the service picks the new model.txt up by itself) ----------------------
-$models = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
+$null = Wait-Http 'http://127.0.0.1:8080/health' 300
+$models = Wait-Http 'http://127.0.0.1:8080/v1/models' 30 (Get-KeyHeader)
 Check 'llama service started the provisioned model by itself; /v1/models answers' ($models -and $models.Content -match [regex]::Escape([IO.Path]::GetFileNameWithoutExtension($tm.path))) $(if ($models) { $models.Content.Substring(0, [Math]::Min(300, $models.Content.Length)) } else { Tail (Join-Path $logs 'lecore-llama.out.log') 30 })
 $dev = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices } | Out-String
 Check 'llama.cpp devices on this runner (informational)' $true (($dev -split "`n" | Where-Object { $_ -match 'Vulkan|device|CPU|load_backend' }) -join ' / ')
 try {
-    $cc = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 24; messages = @(@{ role = 'user'; content = 'Say hello.' }) } 120
+    $cc = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 24; messages = @(@{ role = 'user'; content = 'Say hello.' }) } 120 (Get-KeyHeader)
     Check 'llama-server /v1/chat/completions answers' ([bool]$cc.choices[0].message.content) ("{0}" -f $cc.choices[0].message.content)
 } catch { Check 'llama-server /v1/chat/completions answers' $false $_.Exception.Message }
+
+# 5b. the per-machine API key on :8080 ------------------------------------------------------------------
+$keyFile = Join-Path $data 'secret\llama-api-key'
+$key = (Get-Content -Raw -LiteralPath $keyFile).Trim()
+$acl = (Get-Acl -LiteralPath $keyFile).Access | ForEach-Object { "$($_.IdentityReference):$($_.FileSystemRights)" }
+$aclOk = -not @((Get-Acl -LiteralPath $keyFile).Access | Where-Object { $_.IdentityReference -notin @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators', 'NT SERVICE\lecore-llama', 'NT SERVICE\lecore-chat') }).Count
+Check 'API key: 256 random bits, readable only by the two Zero services (service SIDs), SYSTEM, Administrators' ($key -match '^[0-9a-f]{64}$' -and $aclOk) ($acl -join ', ')
+$k1 = Get-Code 'http://127.0.0.1:8080/v1/models'
+$k2 = Get-Code 'http://127.0.0.1:8080/v1/chat/completions' @('-H', 'Content-Type: application/json', '--data', '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4}')
+$k3 = Get-Code 'http://127.0.0.1:8080/v1/models' @('-H', 'Authorization: Bearer wrong-key')
+$k4 = Get-Code 'http://127.0.0.1:8080/v1/models' @('-H', "Authorization: Bearer $key")
+$k5 = Get-Code 'http://127.0.0.1:8080/health'
+Check 'llama-server requires the key: no key / wrong key -> 401, key -> 200 (/health stays public)' ($k1 -eq '401' -and $k2 -eq '401' -and $k3 -eq '401' -and $k4 -eq '200' -and $k5 -eq '200') "no key /v1/models $k1, no key /v1/chat/completions $k2, wrong key $k3, key $k4, /health $k5"
+$cmdLines = @(Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | ForEach-Object { $_.CommandLine })
+Check 'the key is not on llama-server''s command line (--api-key-file)' ($cmdLines.Count -ge 1 -and -not @($cmdLines | Where-Object { $_ -match $key }).Count -and @($cmdLines | Where-Object { $_ -match '--api-key-file' }).Count) (($cmdLines | Select-Object -First 1) -replace [regex]::Escape($key), '<KEY>')
 
 # 6. chat -> model rung ---------------------------------------------------------------------------
 # Evidence that the chat on :7860 reached the model on :8080: llama-server processes new tasks while the
@@ -215,7 +240,7 @@ try {
 }
 Check 'the llama-server.exe program path cannot reach a non-loopback address (loopback still works)' ($c3 -match '000' -and $c3 -match 'Failed to connect|Could not connect|10013|Permission|forbidden' -and $c4 -eq '200') "same curl.exe placed at that path: $testUrl -> $c3; 127.0.0.1:7860 -> $c4"
 Start-Service lecore-llama
-$null = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
+$null = Wait-Http 'http://127.0.0.1:8080/health' 300
 $listen = @(Get-NetTCPConnection -State Listen -LocalPort 7860, 8080 -ErrorAction SilentlyContinue)
 Check 'llama-server and the chat listen on 127.0.0.1 only' ($listen.Count -ge 2 -and -not @($listen | Where-Object { $_.LocalAddress -ne '127.0.0.1' }).Count) (($listen | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" } | Sort-Object -Unique) -join ', ')
 $before = Get-LlamaTasks
@@ -273,8 +298,8 @@ try {
     [IO.File]::WriteAllLines((Join-Path $data 'llama-args.txt'), [string[]]@('-lv', '4'))
     $mark = (Get-Content (Join-Path $logs 'lecore-llama.out.log')).Count
     Restart-Service lecore-llama
-    $null = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
-    $cc2 = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 8; messages = @(@{ role = 'user'; content = 'Say hi.' }) } 600
+    $null = Wait-Http 'http://127.0.0.1:8080/health' 300
+    $cc2 = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 8; messages = @(@{ role = 'user'; content = 'Say hi.' }) } 600 (Get-KeyHeader)
     $since = (Get-Content (Join-Path $logs 'lecore-llama.out.log') | Select-Object -Skip $mark) -join "`n"
     $vkLines = ($since -split "`n" | Where-Object { $_ -match 'Vulkan0|llvmpipe|offload' } | Select-Object -First 8) -join ' / '
     Remove-Item -Force (Join-Path $data 'llama-args.txt')

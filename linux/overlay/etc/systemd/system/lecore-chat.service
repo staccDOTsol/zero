@@ -4,8 +4,8 @@
 [Unit]
 Description=Zero chat (leCore chat_server) on 127.0.0.1:7860
 # fail closed: no chat without the per-user egress rules (second layer to IPAddressDeny=)
-Requires=nftables.service
-After=local-fs.target nftables.service lecore-llama.service
+Requires=nftables.service zero-llama-key.service
+After=local-fs.target nftables.service zero-llama-key.service lecore-llama.service
 StartLimitIntervalSec=600
 StartLimitBurst=5
 
@@ -13,9 +13,12 @@ StartLimitBurst=5
 Type=simple
 User=lecore-chat
 Group=lecore-chat
+# lecore-api: read access to /etc/lecore-plus/llama-api-key (the model rung sends it to llama-server)
+SupplementaryGroups=lecore-api
 StateDirectory=lecore-plus/chat
 WorkingDirectory=/var/lib/lecore-plus/chat
 Environment=LECORE_LLM_URL=http://127.0.0.1:8080/v1
+Environment=LECORE_LLM_KEY_FILE=/etc/lecore-plus/llama-api-key
 Environment=LECORE_PARTITION=/var/lib/lecore-plus/chat/memory
 Environment=PYTHONHASHSEED=0
 Environment=PYTHONDONTWRITEBYTECODE=1

@@ -157,6 +157,11 @@ for u in lecore-llama lecore-chat; do
     --shell /usr/sbin/nologin --comment "Zero local AI ($u)" "$u"
 done
 usermod -a -G render,video lecore-llama
+# lecore-api: may read the per-machine llama-server API key (/etc/lecore-plus/llama-api-key, generated at
+# first boot by zero-llama-key.service; never baked into the image)
+getent group lecore-api >/dev/null || groupadd --system lecore-api
+usermod -a -G lecore-api lecore-llama
+usermod -a -G lecore-api lecore-chat
 id lecore-llama; id lecore-chat
 
 log "Per-user egress rules (nftables): lecore-llama / lecore-chat may only use loopback"
@@ -167,6 +172,7 @@ cat /etc/nftables.conf
 nft -c -f /etc/nftables.conf && echo "nftables.conf syntax OK" || echo "WARNING: nft -c could not check the rules on this build host"
 install -d -m 0755 -o root -g root /var/lib/lecore-plus /var/lib/lecore-plus/models /etc/lecore-plus /var/lib/zero
 rm -f /etc/lecore-plus/model            # no model in the base image; provision/ writes it
+rm -f /etc/lecore-plus/llama-api-key /etc/lecore-plus/llama-api-key.machine-id   # generated per machine at boot
 
 log "System identity, locale, time zone, fstab"
 echo "$HOSTNAME_DEFAULT" > /etc/hostname
@@ -197,7 +203,7 @@ if [ -f /etc/gdm3/greeter.dconf-defaults ]; then
 fi
 
 log "systemd units"
-systemctl enable nftables.service lecore-llama.service lecore-llama.path lecore-chat.service \
+systemctl enable nftables.service zero-llama-key.service lecore-llama.service lecore-llama.path lecore-chat.service \
   zero-growroot.service zero-gpu-memory.service NetworkManager.service gdm.service systemd-timesyncd.service
 systemctl set-default graphical.target
 # systemd-firstboot would prompt on the console (GNOME's first-boot setup does this job);

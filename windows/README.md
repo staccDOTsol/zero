@@ -37,8 +37,11 @@ This repo contains Microsoft's Windows installer. It is only for imaging license
   - Both the OEM pack's GPU driver and the vendor's current GPU driver are in the driver store. Both
     list the laptop's exact PCI subsystem ID, so Windows picks the newer one: AMD 32.0.31041.1004
     (Adrenalin 26.8.1) over HP's 32.0.22018.5; NVIDIA 32.0.15.9716 (597.16, `nvltwi.inf`) over
-    Lenovo's 32.0.15.9658. Only the NVIDIA INF for this GPU is injected (the package's other 19 OEM
-    INFs would each add a 1.3 GB copy to the driver store). Both GPU drivers install the Vulkan loader.
+    Lenovo's 32.0.15.9658. Of NVIDIA's 20 display INFs only the 3 that list this GPU (DEV_2C38:
+    `nvltwi.inf` for Lenovo, plus the HP and Dell variants) are injected; each one adds a ~1.3 GB copy
+    to the driver store. The NVIDIA package ships the Vulkan loader; HP's AMD INF registers the Vulkan
+    ICD. Check Vulkan on the first laptop of each model:
+    `& 'C:\Program Files\leCore+\llama\llama-server.exe' --list-devices` must list `Vulkan0`.
 - **Privacy toggles and the registry part of the model containment pre-applied to the image**
   (`lockdown.ps1 -OfflineImage`); the per-program firewall rules are added when the stack is installed.
 - **The stack installer** under `C:\Windows\Setup\Scripts\lecore-plus\`, run by `autounattend.xml`
@@ -50,7 +53,8 @@ This repo contains Microsoft's Windows installer. It is only for imaging license
   Disk selection stays interactive (see *Unattended disk layout*).
 - `install.wim` split into `install.swm` parts < 4 GB, so the USB stick can be FAT32.
 
-Models are **not** in the ISO (see *Models*).
+The ISO has no models. Laptops ship the tier's **golden image** instead, built from this ISO with
+every model of the tier inside (see *Models*).
 
 ## Make the USB stick
 
@@ -84,17 +88,33 @@ Experience" customization: the ISO's own `autounattend.xml` already does that jo
 3. OOBE: region/keyboard, then the owner names the local account. No network, no Microsoft account.
 4. At sign-in Zero opens (Edge app window on `http://127.0.0.1:7860`). With no model on the disk
    the chat runs memory-only and the model service just waits for one.
-5. Add the models (next section) before the laptop leaves the station.
+5. A laptop installed from the ISO has no models: put them back with
+   `provision\windows-add-models.ps1 -All <tier>` (next section). Shipped laptops get the golden image
+   instead, which already has them.
 
 ## Models
 
-Models are 10–100 GB each and are not baked into the image. The imaging station downloads them from
-Hugging Face, checks every sha256 against [`models/catalog.json`](../models/catalog.json) and copies
-them onto the laptop. **Every model that fits a tier is preloaded.**
+Shipped laptops get the **golden image** of their tier (`golden/`, see the top-level README): Windows
+11 Pro installed from this ISO in a VM (the same specialize pass installs the Zero stack), every
+catalog model of the tier written into `C:\ProgramData\leCore+\models\`, the tier default in
+`model.txt`, then generalized with `sysprep /generalize /oobe`. It is one raw disk image per tier
+(`zero-pro-windows`, `zero-max-windows` from the HP ISO, `zero-ultra-windows` from the Lenovo ISO)
+that the imaging team writes onto the NVMe. **Every model that fits a tier ships**; nothing is
+downloaded on the laptop. On its first boot each laptop specializes (new SID, its drivers, a fresh
+API key), the `\Zero\Zero golden first boot` task grows C: to the end of the disk, resets the model
+files' ACLs and installs the Windows key from the laptop's firmware, and OOBE asks the owner for a
+local account. How to write it and how it was verified: `golden/README.md`.
+
+Model files sit flat in `C:\ProgramData\leCore+\models\`; `model.txt` holds one file name (the first
+part of a split GGUF; llama-server loads the other parts from the same folder); `models.json` is the
+inventory. To change the served model: edit `model.txt`, then `Restart-Service lecore-llama`.
+
+For service work (a laptop reinstalled from the ISO, a different default), `provision\windows-add-models.ps1`
+writes the same files from Hugging Face, checking every sha256 against
+[`models/catalog.json`](../models/catalog.json):
 
 ```powershell
-# On the imaging station (has internet). W: = the laptop's Windows volume attached to the station,
-# or C: when running on the laptop itself while it is still on the imaging network.
+# W: = the laptop's Windows volume attached to this machine, or C: on the laptop itself (needs internet)
 .\provision\windows-add-models.ps1 -All pro   -Target W: -Cache D:\zero-model-cache   # ~174 GB
 .\provision\windows-add-models.ps1 -All max   -Target W: -Cache D:\zero-model-cache   # ~798 GB
 .\provision\windows-add-models.ps1 -All ultra -Target W: -Cache D:\zero-model-cache   # ~719 GB
@@ -104,24 +124,14 @@ them onto the laptop. **Every model that fits a tier is preloaded.**
   whose `default_for` includes the tier (override with `-Default <id>`).
 - `-Models id1,id2 -Tier <tier>` installs only those (model.txt = `-Default`, else the tier default
   if present, else the first id).
-- Files land flat in `C:\ProgramData\leCore+\models\`; `model.txt` holds one file name (the first part
-  of a split GGUF; llama-server loads the other parts from the same folder). An inventory is written to
-  `C:\ProgramData\leCore+\models.json`.
-- `-Cache` keeps verified downloads on the station so the next laptop is a copy (each copy is
-  re-hashed unless `-SkipCopyVerify`). `-DryRun` prints the plan and sizes.
-
-**Golden-image flow (recommended):** install one laptop per image from the USB stick, run
-`windows-add-models.ps1 -All <tier>` once onto it, then capture that disk with your imaging tool
-and clone it to the other laptops of the same tier (a Pro golden image and a Max golden image from the
-HP ISO, an Ultra golden image from the Lenovo ISO). Run one load test per model on the golden image
-before shipping (edit `model.txt`, `Restart-Service lecore-llama`, then
-`Invoke-RestMethod http://127.0.0.1:8080/v1/models`).
+- `-Cache` keeps verified downloads so the next run is a copy (each copy is re-hashed unless
+  `-SkipCopyVerify`). `-DryRun` prints the plan and sizes.
 
 ## What runs on the laptop
 
 | | Service (WinSW wrapper, `NT AUTHORITY\LocalService`) | Listens | Path |
 |---|---|---|---|
-| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model> --offline --no-webui --cors-origins localhost` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
+| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model> --offline --no-webui --cors-origins localhost --api-key-file …` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
 | Zero chat | `lecore-chat` → `lecore_plus_chat.py` → leCore `chat_server.py` | 127.0.0.1:7860 | `C:\Program Files\leCore+\lecore\` (leCore `21abb4f`, MIT) on Python 3.13.16 embeddable |
 
 - Both are automatic services with restart-on-failure. No model configured → `lecore-llama` is a clean
@@ -152,13 +162,14 @@ again in the specialize pass; the firewall part re-asserted at every boot by the
 | Firewall, per program | Windows Firewall on, **DefaultOutboundAction Allow** on Domain/Private/Public. Outbound **and** inbound Block rules for every non-loopback address (everything except 127.0.0.0/8 and ::1) on exactly `C:\Program Files\leCore+\llama\llama-server.exe` and leCore's embedded `C:\Program Files\leCore+\python\python.exe` / `pythonw.exe` | The guarantee. Block rules beat allow rules. Any other Python, Edge, Windows Update etc. network normally. |
 | Loopback only | `llama-server --host 127.0.0.1`; the chat binds `127.0.0.1:7860` | Nothing on the LAN can talk to them. |
 | llama.cpp | `--offline` (never downloads), `--no-webui` (no built-in web UI; Zero's UI is the chat), `--cors-origins localhost` (no web page from elsewhere can read answers) | llama.cpp has no telemetry; these close its remote-fetch paths. |
+| Per-machine API key on :8080 | `install.ps1` generates 256 random bits on each laptop (Windows Setup's specialize pass) into `C:\ProgramData\leCore+\secret\llama-api-key`, readable only by the two Zero services (service SIDs `NT SERVICE\lecore-llama` / `NT SERVICE\lecore-chat`), SYSTEM and Administrators. llama-server reads it with `--api-key-file` (the key is not on the command line); every request except `/health` needs `Authorization: Bearer <key>`; the chat's rung sends it. Without the file llama-server is not started | Loopback is not a trust boundary with a browser on the machine: a web page can point its own name at 127.0.0.1 (DNS rebinding). Your own tools: `$k = Get-Content 'C:\ProgramData\leCore+\secret\llama-api-key'` (elevated), header `Authorization: Bearer $k`. |
 | leCore chat | Host allow-list (`127.0.0.1:7860`, `localhost:7860`) against DNS rebinding; cross-site POSTs refused; `Content-Security-Policy` so the chat page loads and sends nothing outside 127.0.0.1 (model text such as `<img src=https://…>` cannot leak) | The browser is online, so the chat must not answer other sites. |
 | leCore Python | NLTK corpora pre-staged, `nltk.download()` is an offline no-op; Hugging Face libraries offline | leCore has no telemetry; these are its only automatic downloads. |
 | Crash dumps | Windows Error Reporting excludes `llama-server.exe`, `python.exe`, `pythonw.exe` | A dump is the process memory, i.e. prompts and answers. |
 | Edge (the Zero window) | Off: Microsoft Editor cloud proofing + synonyms, text prediction, Copilot page context. Everything else in Edge is untouched | These send what you type, or what the page shows, to Microsoft. Windows' local spell check still works. |
 | Privacy toggles | The OOBE privacy page, all off: location, Find my device, diagnostic data Required only (`AllowTelemetry 0`; Pro's floor is "Required"), inking & typing, online speech recognition, tailored experiences, advertising ID | Original image requirement. |
 
-Provisioning and model downloads use the network on the imaging station (`windows-add-models.ps1`).
+The models are on the disk when the laptop ships (golden image); nothing has to be downloaded for them.
 
 leCore features that need the network, and therefore **do not work** while contained (the chat says
 it could not reach the address): the chat commands `learn api: <URL>` / `use api: service.endpoint`
@@ -209,7 +220,8 @@ pushes to `windows/**` run the stack build and the smoke test. Each image job: A
 
 The CI smoke test installs the stack on the runner without the machine-policy part of the lockdown,
 starts both services, provisions a tiny test GGUF (never shipped) through `windows-add-models.ps1`,
-checks `/v1/models` and a chat answer that comes from the model, then applies the per-program firewall
+checks `/v1/models`, that :8080 answers 401 without the per-machine key and with a wrong one, and a
+chat answer that comes from the model, then applies the per-program firewall
 part for real and proves: general outbound and another Python still reach the internet; leCore's
 `python.exe` and the `llama-server.exe` path cannot (loopback still works); both listen on 127.0.0.1
 only; the chat refuses rebinding / cross-site requests. It also runs the shipped Vulkan build of

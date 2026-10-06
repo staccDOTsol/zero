@@ -1,17 +1,24 @@
-# leCore+ model menu
+# leCore+ models
 
-`catalog.json` is the menu behind the order page checkboxes. Every file's path, byte size and
-sha256 came from the Hugging Face API (`/api/models/<repo>?blobs=true`) on 2026-10-05. The
-imaging station downloads these files and checks them against the sha256 values. Nothing was
-downloaded to build the menu. `python3 models/check.py` checks the catalog against HF again
-(sizes, sha256, multi-part sets, budgets, one default per tier). It exits 1 on any drift, so it
+`catalog.json` lists the models that ship on each tier. There is no per-order choice: **every model
+with a build for a tier is written into that tier's golden image** (`golden/`), and the laptop opens
+with the model whose `default_for` lists the tier. Pro gets 8 models (about 174 GB), Max 15 (about
+798 GB), Ultra 15 (about 719 GB). Every file's path, byte size and sha256 came from the Hugging Face
+API (`/api/models/<repo>?blobs=true`) on 2026-10-05. The golden build downloads these files on the
+build machine, checks them against the sha256 values, writes them into the image and checks them
+again by reading them back from the finished image. Nothing was downloaded to build the catalog.
+`python3 models/check.py` checks the catalog against HF again (sizes, sha256, multi-part sets,
+budgets, one default per tier). It exits 1 on any drift, so it
 can run in CI.
 
 Sizes are decimal GB (10^9 bytes). Runtime: llama.cpp b11430, Vulkan. For every chosen file I read
 the GGUF header over an HTTP range request. Each `general.architecture` (qwen35, qwen4exp,
 glm5-next, deepseek4, laguna, gemma4, mistral4, gpt-oss, deepseek2, nemotron_h_moe) is in
 `src/llama-arch.cpp` at tag b11430. No file has been load-tested on the hardware yet: there was
-no disk space for that. Run one load test per model on the imaging station before shipping.
+no disk space for that. Each golden image's first-boot test loads and queries the tier's default
+model (on the CPU: the build VM has no GPU); the other models are checked for size and sha256 only.
+Run one load test per model on a sample laptop of each tier before shipping (`sudo zero-model use
+<id>` on Linux; `model.txt` + `Restart-Service lecore-llama` on Windows).
 
 | Model | Maker | License | Pro (≤44 GB) | Max (≤100 GB) | Ultra (fast ≤20 GB / offload ≤100 GB) |
 |---|---|---|---|---|---|
@@ -85,4 +92,4 @@ Picks:
 - **gpt-oss** is from August 2025. OpenAI has published no newer open-weight LLM on HF.
 - **Upstream files can change.** unsloth rewrote the first GLM-5.3-Flash shard on 2026-10-05,
   after llama.cpp merged GLM-5.3-Flash support. When a file changes upstream, the sha256 check
-  at imaging fails. Run `check.py` and update the size and sha256 of each entry it reports.
+  in the golden build fails. Run `check.py` and update the size and sha256 of each entry it reports.

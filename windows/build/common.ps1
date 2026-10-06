@@ -92,9 +92,9 @@ function Show-Disk([string]$Label = 'disk') {
 function Mount-IsoRoot([string]$Iso) {
     # Mounts an ISO and returns its root ("E:\"); the drive letter can take a moment to appear.
     Mount-DiskImage -ImagePath $Iso | Out-Null
-    for ($i = 0; $i -lt 30; $i++) {
-        $letter = (Get-DiskImage -ImagePath $Iso | Get-Volume -ErrorAction SilentlyContinue).DriveLetter
-        if ($letter) { return "${letter}:\" }
+    for ($i = 0; $i -lt 60; $i++) {
+        $vol = @(Get-DiskImage -ImagePath $Iso | Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.DriveLetter })
+        if ($vol.Count) { return "$($vol[0].DriveLetter):\" }   # the volume can take a moment to appear
         Start-Sleep -Seconds 1
     }
     throw "mounted $Iso but it got no drive letter"

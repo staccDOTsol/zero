@@ -9,7 +9,8 @@ attaches exactly that remote_llm callable as the rung, guarded so the chat keeps
   * no model configured in C:\\ProgramData\\leCore+\\model.txt -> the rung answers "" (escalate), no call made;
   * llama-server down or still loading -> remote_llm raises, the rung answers "" (escalate);
   * "none" chosen in the chat's Settings -> the rung answers "".
-It also serves the chat page with the window title "Zero" (LECORE_PLUS_TITLE) and adds GET /zero/status.
+It sends the per-machine llama-server API key (LECORE_PLUS_LLM_KEY_FILE) as the rung's Bearer token, serves
+the chat page with the window title "Zero" (LECORE_PLUS_TITLE) and adds GET /zero/status.
 
 LECORE_PLUS_EGRESS_GUARD=1 (CI smoke test) makes every non-loopback connect / DNS lookup from this
 process fail and records it in logs\\egress-guard.log, which proves the chat itself never reaches out.
@@ -32,6 +33,7 @@ PORT = int(os.environ.get("LECORE_PLUS_CHAT_PORT", "7860"))
 TITLE = os.environ.get("LECORE_PLUS_TITLE", "Zero")
 LLM_URL = os.environ.get("LECORE_LLM_URL", "")
 LLM_TIMEOUT = float(os.environ.get("LECORE_PLUS_LLM_TIMEOUT", "300"))
+LLM_KEY_FILE = os.environ.get("LECORE_PLUS_LLM_KEY_FILE") or os.path.join(DATA, "secret", "llama-api-key")
 
 
 def log(msg):
@@ -108,6 +110,16 @@ def configured_model():
     return path if os.path.isfile(path) else None
 
 
+def llm_api_key():
+    """The per-machine llama-server API key (install.ps1), read on every call; None if unreadable."""
+    try:
+        with open(LLM_KEY_FILE, encoding="ascii") as f:
+            return f.read().strip() or None
+    except OSError as e:
+        log("cannot read the model server key %s (%s)" % (LLM_KEY_FILE, e))
+        return None
+
+
 def make_rung(chat_state):
     from holographic.io_and_interop.holographic_remotellm import remote_llm
 
@@ -119,7 +131,7 @@ def make_rung(chat_state):
             return ""
         alias = os.path.splitext(os.path.basename(model))[0]
         try:
-            return remote_llm(url=LLM_URL, model=alias, timeout=LLM_TIMEOUT)(prompt, **kw)
+            return remote_llm(url=LLM_URL, model=alias, api_key=llm_api_key(), timeout=LLM_TIMEOUT)(prompt, **kw)
         except Exception as e:  # llama-server down / loading: memory-only answer instead of a 500
             log("model rung unavailable: %s" % e)
             return ""

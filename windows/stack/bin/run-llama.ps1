@@ -5,6 +5,7 @@
   or an absolute path) and runs:
       llama-server.exe --host 127.0.0.1 --port 8080 -ngl 999 -m <model>
                        --alias <name> --offline --no-webui --cors-origins localhost
+                       --api-key-file C:\ProgramData\leCore+\secret\llama-api-key
   plus any extra arguments listed one per line in C:\ProgramData\leCore+\llama-args.txt.
 
   No model configured -> a clean no-op: nothing listens on 127.0.0.1:8080, the chat runs memory-only,
@@ -48,12 +49,22 @@ while ($true) {
     if (Test-Path -LiteralPath $argsFile) {
         $extra = @(Get-Content -LiteralPath $argsFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
     }
+    $keyFile = $env:LECORE_PLUS_LLM_KEY_FILE
+    if (-not $keyFile) { $keyFile = Join-Path $data 'secret\llama-api-key' }
+    if (-not (Test-Path -LiteralPath $keyFile)) {
+        # fail closed: never serve the model without the per-machine API key
+        if ($said -ne 'nokey') { Say "API key $keyFile missing; llama-server not started (re-run C:\Program Files\leCore+\setup\install.ps1)."; $said = 'nokey' }
+        Start-Sleep -Seconds 15
+        continue
+    }
     $alias = [IO.Path]::GetFileNameWithoutExtension($m.Path)
     # --offline: llama.cpp never downloads anything; --no-webui: no built-in web UI (Zero's UI is the chat on
-    # :7860); --cors-origins localhost: a web page from anywhere else cannot read the model's answers.
+    # :7860); --cors-origins localhost: a web page from anywhere else cannot read the model's answers;
+    # --api-key-file: every request except /health needs the per-machine key (DNS-rebinding pages can't
+    # use the model); read from a file so the key is not on the command line.
     # The firewall blocks llama-server.exe from every non-loopback address on top of this.
     $cmd = @('--host', '127.0.0.1', '--port', '8080', '-ngl', '999', '-m', $m.Path, '--alias', $alias,
-             '--offline', '--no-webui', '--cors-origins', 'localhost') + $extra
+             '--offline', '--no-webui', '--cors-origins', 'localhost', '--api-key-file', $keyFile) + $extra
     Say ("starting: `"$server`" " + ($cmd -join ' '))
     # llama-server logs to stderr; fold it into stdout as plain text so Windows PowerShell never turns a log
     # line into a terminating NativeCommandError (WinSW writes the output to C:\ProgramData\leCore+\logs).

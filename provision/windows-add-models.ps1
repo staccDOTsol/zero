@@ -1,31 +1,31 @@
 <#
 .SYNOPSIS
-  Adds models to a Zero (leCore+) Windows laptop or disk image AT IMAGING TIME. Runs on the imaging
-  station, never on the laptop (the laptop has zero egress).
+  Adds catalog models to a Zero (leCore+) Windows volume (service work, or a hand-built image). The
+  shipped laptops get every model of their tier in the golden image (golden/windows/build.sh writes
+  the same files, model.txt and models.json), so they download nothing.
 
 .DESCRIPTION
   Reads models/catalog.json (schema: models[].id, models[].builds.<tier> = null | { repo, files[] },
   files[].path / .bytes / .sha256, models[].default_for[]), downloads each file from
       https://huggingface.co/<repo>/resolve/main/<path>
-  into a cache on the imaging station, checks bytes + sha256, copies it into
+  into a cache on the machine running this, checks bytes + sha256, copies it into
       <Target>\ProgramData\leCore+\models\<file name>
   checks the copy's sha256 again, and writes <Target>\ProgramData\leCore+\model.txt (one line: the
   default model's first file name). llama-server loads the other parts of a split GGUF from the same
   folder.
 
   Two ways to choose models:
-    -All <tier>                every model whose builds.<tier> is not null (the golden-image flow:
-                               run once per tier, then capture/clone the image).
-    -Models <id>,<id> -Tier t  just these models (the order page's checkboxes).
+    -All <tier>                every model whose builds.<tier> is not null (what a tier ships with).
+    -Models <id>,<id> -Tier t  just these models (service work).
   model.txt names -Default <id> if given; otherwise the model whose default_for includes the tier;
   otherwise (with -Models) the first id.
 
 .PARAMETER Target
-  Root of the target Windows volume: a drive letter of the laptop's Windows partition attached to the
-  imaging station or of an applied/mounted image (e.g. W:), or C: when running on the laptop itself
-  during imaging. Default C:.
+  Root of the target Windows volume: a drive letter of a laptop's Windows partition attached to this
+  machine or of an applied/mounted image (e.g. W:), or C: when running on the laptop itself.
+  Default C:.
 .PARAMETER Cache
-  Download cache on the imaging station (reused across laptops). Default <Target>\ProgramData\leCore+\models\.download
+  Download cache (reused across runs). Default <Target>\ProgramData\leCore+\models\.download
   (no second copy needed when imaging a single machine).
 .PARAMETER HfToken
   Optional Hugging Face token for gated repos (or set HF_TOKEN).

@@ -21,8 +21,8 @@ chat. The model's input and output never leave the laptop. The rest of the OS ne
 | llama.cpp **b11430**, `llama-b11430-bin-ubuntu-vulkan-x64.tar.gz` (sha256 pinned in `config.env`) | `/opt/lecore-plus/llama/` | `lecore-llama.service` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m /var/lib/lecore-plus/models/<file>` |
 | leCore at commit `21abb4f4bdbe98cad0ec223bec9cab28148e73d9` (MIT), unmodified | `/opt/lecore-plus/lecore/`, venv `/opt/lecore-plus/venv/` | `lecore-chat.service` → leCore `chat_server.py` on `127.0.0.1:7860`, `LECORE_LLM_URL=http://127.0.0.1:8080/v1` |
 | Zero app window | `/etc/xdg/autostart/zero.desktop`, launcher "Zero" | Chromium `--app=http://127.0.0.1:7860/` for every user at login |
-| Models (GGUF) | `/var/lib/lecore-plus/models/` + `zero-models.json` | added at imaging time by `provision/linux-add-models.sh`, never in the image |
-| Default model | `/etc/lecore-plus/model` (one line: a file name in the models dir) | written by provisioning; `sudo zero-model use <id>` changes it |
+| Models (GGUF) | `/var/lib/lecore-plus/models/` + `zero-models.json` | every model of the tier, written into the tier's golden image (`golden/`) by `provision/linux-add-models.sh --all <tier> --image`; the base release image has none |
+| Default model | `/etc/lecore-plus/model` (one line: a file name in the models dir) | the catalog default of the tier, set by the golden build; `sudo zero-model use <id>` changes it |
 
 ### Services
 
@@ -158,6 +158,18 @@ system user under systemd, and each binds to 127.0.0.1 only:
   own firewall can coexist.
 - **Fail closed:** both units have `Requires=nftables.service`. If the rules do not load, the AI
   services do not start.
+- **Loopback is not a trust boundary on a laptop with a browser.** A web page can point its own host
+  name at 127.0.0.1 (DNS rebinding) and talk to local ports. So:
+  - **llama-server needs a per-machine API key.** `zero-llama-key.service` generates 256 random bits
+    at first boot into `/etc/lecore-plus/llama-api-key` (`root:lecore-api 0640`; only the
+    `lecore-llama` and `lecore-chat` users are in `lecore-api`) and again whenever `/etc/machine-id`
+    changes, so a cloned disk gets its own key. llama-server reads it with `LLAMA_ARG_API_KEY_FILE`
+    (not on the command line). Every request except `/health` needs `Authorization: Bearer <key>`.
+    The chat launcher sends it from `LECORE_LLM_KEY_FILE`. For your own tools:
+    `curl -H "Authorization: Bearer $(sudo cat /etc/lecore-plus/llama-api-key)" http://127.0.0.1:8080/v1/models`.
+  - **The chat answers only `Host: 127.0.0.1:7860` / `localhost:7860`** and refuses cross-site POSTs
+    (403). Its pages carry a Content-Security-Policy that keeps them on 127.0.0.1, so model output
+    such as `<img src=https://…>` cannot carry text off the machine.
 - **The Zero window.** Chromium shows model input and output. The enterprise policy
   `/etc/chromium/policies/managed/zero.json` turns off only the features that would send page or
   typed text to Google: Translate, the enhanced spell-check service, and the Help-me-write/Lens/
@@ -166,7 +178,8 @@ system user under systemd, and each binds to 127.0.0.1 only:
 
 Verified in CI (QEMU): as `lecore-llama` and as `lecore-chat`, `curl http://1.1.1.1` (and IPv6)
 fails while `curl http://127.0.0.1:7860` works. A root process moved into each service's cgroup is
-blocked too, and root outside them reaches the internet. See [Smoke test](#smoke-test-ci).
+blocked too, and root outside them reaches the internet. Requests to :8080 without the key, or with
+a wrong one, get 401; the chat still reaches the model; a foreign `Host:` header on :7860 gets 403. See [Smoke test](#smoke-test-ci).
 
 To check on a laptop: `sudo nft list table inet zero_egress` (the drop counters) and
 `systemctl show lecore-chat -p IPAddressDeny -p IPAddressAllow`.
@@ -189,8 +202,10 @@ To check on a laptop: `sudo nft list table inet zero_egress` (the drop counters)
 
 ## Models
 
-Models are not in the image (see the top-level README). The imaging station runs
-`provision/linux-add-models.sh` (see `flash.md`):
+Laptops ship the **golden image** of their tier (see the top-level README and `flash.md`): this
+image plus every catalog model of the tier, with the tier's default selected, so `lecore-llama` serves
+the default model from the first boot. The golden build (`golden/ci/golden-linux.yml`) puts the
+models in with `provision/linux-add-models.sh --all <tier> --image`, which also does service work:
 
 - `--all <tier>`: every model with a build for that tier. The default is the catalog's
   `default_for` model unless you pass `--default <id>`.
