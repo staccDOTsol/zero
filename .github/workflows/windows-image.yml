@@ -176,7 +176,9 @@ jobs:
         shell: bash
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "Zero Windows images $TAG" \
+            # a DRAFT until every image is uploaded (finalize publishes it), so nothing that picks
+            # "the latest windows-* release" (e.g. golden-stage) ever sees a half-uploaded one
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Zero Windows images $TAG" \
               --notes "Building (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
           fi
           gh release upload "$TAG" out/lecore-plus-windows-stack.zip out/lecore-plus-windows-stack.zip.sha256 --clobber
@@ -296,3 +298,9 @@ jobs:
           cat notes.md
           gh release upload "$TAG" SHA256SUMS --clobber
           gh release edit "$TAG" --notes-file notes.md
+          if [ "${{ needs.image.result }}" = success ]; then
+            gh release edit "$TAG" --draft=false --latest=false
+            echo "published $TAG"
+          else
+            echo "::warning::image jobs did not all succeed (${{ needs.image.result }}); $TAG stays a draft"
+          fi
