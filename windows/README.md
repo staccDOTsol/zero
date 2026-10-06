@@ -95,15 +95,15 @@ Experience" customization: the ISO's own `autounattend.xml` already does that jo
 ## Models
 
 Shipped laptops get the **golden image** of their tier (`golden/`, see the top-level README): Windows
-11 Pro installed from this ISO in a VM (the same specialize pass installs the Zero stack), every
+11 Pro installed from this ISO in a VM (the stack installed by this ISO's `install.ps1`), every
 catalog model of the tier written into `C:\ProgramData\leCore+\models\`, the tier default in
 `model.txt`, then generalized with `sysprep /generalize /oobe`. It is one raw disk image per tier
 (`zero-pro-windows`, `zero-max-windows` from the HP ISO, `zero-ultra-windows` from the Lenovo ISO)
 that the imaging team writes onto the NVMe. **Every model that fits a tier ships**; nothing is
-downloaded on the laptop. On its first boot each laptop specializes (new SID, its drivers, a fresh
-API key), the `\Zero\Zero golden first boot` task grows C: to the end of the disk, resets the model
-files' ACLs and installs the Windows key from the laptop's firmware, and OOBE asks the owner for a
-local account. How to write it and how it was verified: `golden/README.md`.
+downloaded on the laptop. On its first boot each laptop specializes (new SID, its drivers) and runs
+the golden first-boot step (C: to the end of the disk, model file ACLs, a fresh API key, the Windows
+key from the laptop's firmware; again as the `\Zero\Zero golden first boot` startup task), and OOBE
+asks the owner for a local account. How to write it and how it was verified: `golden/README.md`.
 
 Model files sit flat in `C:\ProgramData\leCore+\models\`; `model.txt` holds one file name (the first
 part of a split GGUF; llama-server loads the other parts from the same folder); `models.json` is the
