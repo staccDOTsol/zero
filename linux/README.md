@@ -68,13 +68,15 @@ resolved versions are in `BUILDINFO.txt`.
 
 | Component | Version in the image | Source |
 |---|---|---|
-| Distribution | Debian 13 (trixie) | deb.debian.org |
-| Kernel | **7.2.6** (`linux-image-7.2.6+bpo-amd64`, Debian-signed) | trixie-backports |
+| Distribution | Debian 13.7 (trixie) | deb.debian.org |
+| Kernel | **7.2.6** (`7.2.6+deb13-amd64`, package 7.2.6-1~bpo13+1, Debian-signed) | trixie-backports |
 | linux-firmware | **20260810** (`firmware-amd-graphics`, `-intel-graphics`, `-iwlwifi`, `-mediatek`, `-atheros`, `-realtek`, `-misc-nonfree`) | trixie-backports |
-| Mesa (RADV, ANV) | **26.1.6** | trixie-backports |
-| NVIDIA | **615.71.09** open kernel modules (`nvidia-open`, DKMS) + Vulkan ICD + GSP firmware | NVIDIA's repo `developer.download.nvidia.com/compute/cuda/repos/debian13` |
-| systemd / GNOME | 257 / GNOME 48 (gdm3, gnome-initial-setup) | trixie |
-| Browser | Chromium (a real `.deb`) | trixie |
+| Mesa (RADV, ANV) | **26.1.6** (26.1.6-1~bpo13+1) | trixie-backports |
+| NVIDIA | **615.71.09** open kernel modules (`nvidia-open` 615.71.09-2, DKMS 3.4) + Vulkan ICD + GSP firmware | NVIDIA's repo `developer.download.nvidia.com/compute/cuda/repos/debian13` |
+| systemd / GNOME | 257.13 / GNOME Shell 48.7, gdm3 48.0, gnome-initial-setup 48.1 | trixie |
+| Browser | Chromium 154.0.8037.92 (a real `.deb`) | trixie |
+| Python (leCore venv) | 3.13.5; Flask 3.1.3, numpy 2.5.3, matplotlib 3.11.2, pillow 12.3.0, nltk 3.10.3 (`lecore-requirements.lock`) | trixie + PyPI at build time |
+| Boot | shim-signed 16.1, grub-efi-amd64-signed 2.12 | trixie |
 
 The exact versions of every package in a given build are in that release's `BUILDINFO.txt` and
 `packages.txt`.
@@ -175,8 +177,8 @@ loopback-only either way.
   GRUB → Debian-signed kernel 7.2.6. amdgpu is an in-tree, signed module. CI boots the image with
   Secure Boot enforced (OVMF with Microsoft keys) and checks `mokutil --sb-state`.
 - **Secure Boot ON, Zero Ultra (NVIDIA): blocker.** The NVIDIA open modules are built by DKMS on
-  the build host and are not signed by any key the firmware trusts. The build key is deleted so that
-  no shared signing key ships. With Secure Boot on, the kernel refuses to load `nvidia.ko`. The
+  the build host and are **unsigned**. DKMS does not sign in a chroot, and no shared signing key is
+  shipped (that key would be the same on every laptop). With Secure Boot on, the kernel refuses to load `nvidia.ko`. The
   desktop still runs on the Intel iGPU, but llama.cpp has no NVIDIA GPU. Fix, once per laptop, as
   the owner:
   `sudo zero-nvidia-secureboot`. It creates a per-machine MOK, rebuilds and signs the modules, and

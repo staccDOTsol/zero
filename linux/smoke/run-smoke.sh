@@ -107,6 +107,9 @@ boot() { # name overlay mode secure(0|1)
       sleep 5; qmp "$sock" screendump "{\"filename\": \"$OUT/$name-screen.png\", \"format\": \"png\"}" || true
       qmp "$sock" quit || true; break
     fi
+    if [ "$t" -ge 900 ] && ! grep -q ZERO_SMOKE_STARTED "$log" 2>/dev/null; then
+      echo "boot $name: the smoke unit never started (15 min)"; t=$TMO
+    fi
     if [ "$t" -ge "$TMO" ]; then
       echo "boot $name: TIMEOUT after ${t}s"
       qmp "$sock" screendump "{\"filename\": \"$OUT/$name-timeout.png\", \"format\": \"png\"}" || true
