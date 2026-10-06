@@ -44,7 +44,7 @@ jobs:
           set -euo pipefail
           case "$TIER" in pro|max) T=hp-zbook-ultra-g1a ;; ultra) T=lenovo-p16-gen3 ;; esac
           cd "$WORK"
-          aws s3 cp "s3://$BUCKET/base/windows/$WIN_TAG/SHA256SUMS-$T.txt" sums.txt --only-show-errors
+          aws s3 cp "s3://$BUCKET/base/windows/$WIN_TAG/SHA256SUMS-$T.txt" - --only-show-errors | tr -d '\r' > sums.txt
           ISO=$(awk '$2 ~ /\.iso$/ {print $2}' sums.txt)
           for p in $(awk '$2 ~ /\.iso\.part[0-9]+$/ {print $2}' sums.txt); do
             aws s3 cp "s3://$BUCKET/base/windows/$WIN_TAG/$p" "$p" --only-show-errors

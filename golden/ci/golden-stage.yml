@@ -38,6 +38,7 @@ jobs:
             [ "$tag" = latest ] && tag=$(newest "$kind-")
             echo "== $kind $tag"; echo "### golden-stage: $kind \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
             rm -rf sums && mkdir -p sums && gh release download "$tag" -R "$GITHUB_REPOSITORY" -p 'SHA256SUMS*' -D sums
+            sed -i 's/\r$//' sums/*   # the Windows release writes CRLF
             gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[] | "\(.name)\t\(.size)"' > assets.tsv
             local P="s3://$BUCKET/base/$kind/$tag" name size want have
             while IFS=$'\t' read -r name size; do
@@ -51,6 +52,7 @@ jobs:
                 | tee >(sha256sum | awk '{print $1}' > part.sha256) \
                 | aws s3 cp - "$P/$name" --expected-size "$size" --only-show-errors
               for _ in $(seq 1 60); do [ -s part.sha256 ] && break; sleep 1; done
+              case "$name" in SHA256SUMS*) ;; *) [ -n "$want" ] || { echo "::error::$name is not in SHA256SUMS"; exit 1; } ;; esac
               if [ -n "$want" ] && [ "$(cat part.sha256)" != "$want" ]; then
                 aws s3 rm "$P/$name" --only-show-errors; echo "::error::$name sha256 mismatch"; exit 1
               fi

@@ -25,6 +25,9 @@
 #   --reserve-gb <N>     keep at least N GiB free on the target after copying (default 2); with
 #                        --image the image file is grown to make room
 #   --no-verify-target   do not re-hash the copies on the target (faster, less safe)
+#   --move               move verified files out of the cache instead of copying them, when the cache is
+#                        on the target's file system (the golden build downloads into the image itself,
+#                        so a tier needs its disk space once, not twice)
 #   --dry-run            print the plan and exit
 #
 # Default model (/etc/lecore-plus/model): --default <id> if given; with --all, the model whose
@@ -38,12 +41,12 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CATALOG=$HERE/../models/catalog.json
 CACHE=$PWD/model-cache
 ORIG_ARGS=("$@")
-TIER="" ALL=0 DEFAULT_ID="" MODE="" TARGET="" IMAGE="" GROW=0 VERIFY_TARGET=1 DRY=0 RESERVE_GB=2
+TIER="" ALL=0 DEFAULT_ID="" MODE="" TARGET="" IMAGE="" GROW=0 VERIFY_TARGET=1 DRY=0 RESERVE_GB=2 MOVE=0
 IDS=()
 
 die() { echo "linux-add-models: $*" >&2; exit 1; }
 say() { echo "==> $*"; }
-usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -57,6 +60,7 @@ while [ $# -gt 0 ]; do
     --cache) CACHE=${2:?}; shift 2 ;;
     --grow) GROW=1; shift ;;
     --no-verify-target) VERIFY_TARGET=0; shift ;;
+    --move) MOVE=1; shift ;;
     --reserve-gb) RESERVE_GB=${2:?}; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage 0 ;;
@@ -246,6 +250,8 @@ fi
 MODELS=$ROOT/var/lib/lecore-plus/models
 install -d -m 0755 "$MODELS" "$ROOT/etc/lecore-plus"
 NEED=$(need_bytes "$ROOT"); FREE=$(free_bytes "$MODELS")
+SAMEFS=0; [ "$MOVE" = 1 ] && [ "$(stat -c %d "$CACHE")" = "$(stat -c %d "$MODELS")" ] && SAMEFS=1
+[ "$SAMEFS" = 1 ] && NEED=0   # the files are already on this file system; moving them takes no space
 [ "$NEED" -le $((FREE - SLACK)) ] || die "not enough space on the target: need $((NEED/1000000000)) GB + ${RESERVE_GB} GiB reserve, free $((FREE/1000000000)) GB (use --grow or a bigger disk)"
 
 # ------------------------------------------------------------------------------------------------
@@ -258,8 +264,13 @@ while IFS=$'\t' read -r kind id repo path bytes sha; do
       echo "  present: $base"; continue
     fi
   fi
-  say "copying $base"
-  cp "$src" "$dst.zero-tmp"
+  if [ "$SAMEFS" = 1 ]; then
+    say "moving $base"
+    mv -f "$src" "$dst.zero-tmp"
+  else
+    say "copying $base"
+    cp "$src" "$dst.zero-tmp"
+  fi
   sync -f "$dst.zero-tmp" 2>/dev/null || sync
   if [ "$VERIFY_TARGET" = 1 ]; then
     got=$(sha256sum "$dst.zero-tmp" | cut -d' ' -f1)

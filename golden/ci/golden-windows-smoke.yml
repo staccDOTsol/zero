@@ -1,0 +1,77 @@
+name: golden-windows-smoke
+# CI smoke test of the Windows golden-image path (golden/windows/build.sh) on a standard runner with
+# KVM: the HP ISO of a windows-* release -> Windows Setup in QEMU -> the ISO's specialize pass (Zero
+# stack) -> audit mode -> sysprep /generalize /oobe -> a TINY test model (SmolLM2-135M, never shipped)
+# written in offline -> its sha256 re-read from the image -> the first boot on a larger overlay with
+# verify.ps1 (default model served and answering, chat through it, containment). Nothing is uploaded.
+# The real images (every catalog model, 96-core runners) are built by kekloldyormarket/zero-golden.
+# Not in the public mirror (staccDOTsol/zero): it downloads the Windows ISO.
+on:
+  workflow_dispatch:
+    inputs:
+      windows_tag: { description: "windows-* release tag, or 'latest'", default: latest }
+permissions: { contents: read }
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WANT: ${{ inputs.windows_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space, tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/local/.ghcup /usr/share/swift || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils ovmf aria2 p7zip-full xorriso ntfs-3g gdisk zstd dosfstools >/dev/null
+          nproc; free -g; df -h /; ls -l /dev/kvm
+          sudo modprobe nbd && echo "nbd ok" || echo "no nbd"
+      - name: HP ISO (the release's parts, sha256-checked, joined as they arrive)
+        run: |
+          set -euo pipefail
+          TAG=$WANT
+          if [ "$TAG" = latest ]; then
+            TAG=$(gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt,isDraft \
+              -q '[.[] | select(.isDraft | not) | select(.tagName | startswith("windows-"))] | sort_by(.createdAt) | last | .tagName')
+          fi
+          echo "release $TAG"
+          sudo mkdir -p /mnt/g && sudo chown "$USER" /mnt/g && cd /mnt/g
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'SHA256SUMS-hp-zbook-ultra-g1a.txt' -O - | tr -d '\r' > SHA256SUMS-hp-zbook-ultra-g1a.txt
+          ISO=$(awk '$2 ~ /\.iso$/ {print $2}' SHA256SUMS-hp-zbook-ultra-g1a.txt)
+          for p in $(awk '$2 ~ /\.iso\.part[0-9]+$/ {print $2}' SHA256SUMS-hp-zbook-ultra-g1a.txt); do
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$p"
+            grep -F "  $p" SHA256SUMS-hp-zbook-ultra-g1a.txt | sha256sum -c -
+            cat "$p" >> "$ISO"; rm -f "$p"
+          done
+          grep -E '\.iso$' SHA256SUMS-hp-zbook-ultra-g1a.txt | sha256sum -c -
+          echo "ISO=/mnt/g/$ISO" >> "$GITHUB_ENV"; df -h /
+      - name: Golden build with a tiny test model (no upload)
+        env:
+          GOLDEN_OS_GIB: "48"
+          GOLDEN_NVME_BYTES: "137438953472"
+          GOLDEN_TIME_SCALE: "3"
+        run: |
+          cat > /mnt/g/test-catalog.json <<'EOF'
+          {"updated": "ci", "models": [
+            {"id": "smoke-tiny", "name": "SmolLM2 135M Instruct (CI smoke test only)", "license": "apache-2.0",
+             "default_for": ["pro"],
+             "builds": {"pro": {"repo": "bartowski/SmolLM2-135M-Instruct-GGUF", "quant": "Q4_K_M", "speed": "fast",
+                                "files": [{"path": "SmolLM2-135M-Instruct-Q4_K_M.gguf", "bytes": 105454432,
+                                           "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"}]},
+                        "max": null, "ultra": null}}]}
+          EOF
+          # VMs as large as this runner allows (Windows 11 needs 4 GB)
+          M=$(( $(free -g | awk '/Mem:/{print $2}') - 2 )); [ "$M" -gt 12 ] && M=12; [ "$M" -lt 4 ] && M=4
+          export GOLDEN_SETUP_SMP=$(nproc) GOLDEN_VERIFY_SMP=$(nproc) GOLDEN_SETUP_MEM=$M GOLDEN_VERIFY_MEM=$M
+          echo "VMs: $(nproc) vCPU, $M GiB"
+          sudo -E golden/windows/build.sh --tier pro --iso "$ISO" --work /mnt/g/w --catalog /mnt/g/test-catalog.json --no-upload
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-windows-smoke-logs
+          path: /mnt/g/w/logs/
+          if-no-files-found: ignore
+          retention-days: 14

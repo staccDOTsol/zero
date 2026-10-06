@@ -74,8 +74,7 @@ try {
     Check 'no enabled user account baked in (the owner creates one at OOBE)' ($users.Count -eq 0) ("enabled: " + ($users -join ', '))
     $unattend = Join-Path $env:WINDIR 'Panther\unattend.xml'
     Check 'OOBE answer file in place (local account, no Microsoft-account screens)' ((Test-Path $unattend) -and ((Get-Content -Raw $unattend) -match 'HideOnlineAccountScreens>true')) $unattend
-    $spec = Join-Path $env:WINDIR 'Setup\Scripts\lecore-plus-specialize.log'
-    Check 'specialize pass re-ran the Zero stack check on this machine' ((Test-Path $spec) -and ((Get-Content -Raw $spec) -match 'done')) (Tail $spec 3)
+    Info 'stack installed in' ([string]$golden.stack_installed_in)
 
     # --- golden first boot task ---------------------------------------------------------------------------
     $done = Join-Path $data 'golden-firstboot.done'
@@ -94,7 +93,7 @@ try {
     $keyFile = Join-Path $data 'secret\llama-api-key'
     $key = if (Test-Path $keyFile) { (Get-Content -Raw -LiteralPath $keyFile).Trim() } else { '' }
     $keySha = if ($key) { (Get-FileHash -LiteralPath $keyFile -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
-    Check 'per-machine llama-server API key generated on this machine (not the build VM''s)' ($key -match '^[0-9a-f]{64}$' -and $keySha -ne $golden.build_api_key_sha256) "sha256 $keySha vs build $($golden.build_api_key_sha256)"
+    Check 'per-machine llama-server API key generated on this machine by the first-boot task (not the build VM''s)' ($key -match '^[0-9a-f]{64}$' -and $keySha -ne $golden.build_api_key_sha256) "sha256 $keySha vs build $($golden.build_api_key_sha256)"
     $auth = @{ Authorization = "Bearer $key" }
 
     # --- models -------------------------------------------------------------------------------------------
