@@ -84,6 +84,8 @@ jobs:
           path: |
             ${{ env.OUT }}/smoke/*.log
             ${{ env.OUT }}/smoke/*.png
+            ${{ env.OUT }}/smoke/*.pcap
+            ${{ env.OUT }}/smoke/*-console.txt
             ${{ env.OUT }}/smoke/smoke-report.txt
             ${{ env.OUT }}/BUILDINFO.txt
             ${{ env.OUT }}/packages.txt
@@ -120,6 +122,7 @@ jobs:
         if: github.event_name == 'push' || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.pack.outputs.tag }}
           RAW_BYTES: ${{ steps.pack.outputs.raw_bytes }}
         run: |

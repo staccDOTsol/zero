@@ -41,6 +41,8 @@ echo "root fs size $ROOTSZ bytes on a $DISKSZ byte disk"
   || bad "root file system did not grow (root $ROOTSZ, disk $DISKSZ)"
 sgdisk -v "/dev/$(lsblk -no PKNAME "$(findmnt -no SOURCE /)" | head -n1)" | tail -n 2
 [ -s /etc/machine-id ] && ok "machine-id generated on first boot" || bad "machine-id empty"
+grep -q '^NAME="Zero"' /etc/os-release && grep -q '^LOGO=zero' /etc/os-release && [ -f /etc/xdg/autostart/zero.desktop ] \
+  && grep -q '^Name=Zero' /usr/share/applications/zero.desktop && ok "branded Zero (os-release, launcher, login autostart)" || bad "Zero branding missing"
 U=$(awk -F: '$3>=1000 && $3<65000 {print $1}' /etc/passwd)
 [ -z "$U" ] && ok "no user accounts baked in (first-boot setup creates the owner)" || bad "unexpected users: $U"
 passwd -S root | grep -qE '^root (L|NP)' && ok "root account locked: $(passwd -S root)" || warn "root: $(passwd -S root)"
@@ -64,9 +66,17 @@ hdr "zero egress: firewall"
 nft list ruleset
 nft list chain inet zero_egress output 2>/dev/null | grep -q 'policy drop' && ok "nftables output policy drop is loaded" || bad "output policy drop missing"
 systemctl is-active -q nftables.service && ok "nftables.service active" || bad "nftables.service not active"
-echo "--- listening sockets"; ss -H -tulnp
-NONLO=$(ss -H -tln | awk '{print $4}' | grep -vE '^(127\.|\[::1\]|::1)' || true)
-[ -z "$NONLO" ] && ok "no TCP listener outside loopback" || bad "TCP listeners outside loopback: $NONLO"
+echo "--- listening sockets"
+if command -v ss >/dev/null; then
+  ss -H -tulnp
+  NONLO=$(ss -H -tuln | awk '{print $5}' | grep -vE '^(127\.[0-9.]+|\[::1\]|::1|\[::ffff:127\.[0-9.]+\]):' || true)
+  [ -z "$NONLO" ] && ok "no TCP/UDP listener outside loopback" || bad "listeners outside loopback: $NONLO"
+else
+  bad "ss (iproute2) missing; cannot check listeners"
+fi
+NMRAF=$(systemctl show -p RestrictAddressFamilies --value NetworkManager.service)
+echo "NetworkManager RestrictAddressFamilies: $NMRAF"
+echo "$NMRAF" | grep -q AF_PACKET && ok "NetworkManager denied packet sockets (no DHCP; raw frames bypass nftables)" || bad "NetworkManager may use packet sockets"
 echo "--- phone-home services"
 BADU=""
 for u in apt-daily.timer apt-daily-upgrade.timer systemd-timesyncd.service fwupd-refresh.timer avahi-daemon.service \
@@ -105,7 +115,7 @@ curl -s http://127.0.0.1:7860/ | grep -o '<title>[^<]*</title>' | grep -q '<titl
 curl -s http://127.0.0.1:7860/api/settings; echo
 R=$(chat "what is lecore"); echo "chat> what is lecore"; echo "$R" | head -c 600; echo
 echo "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("text")' 2>/dev/null \
-  && ok "chat answered from leCore memory (memory-only, no model running)" || bad "chat did not answer"
+  && ok "chat answered from leCore memory$([ "$MODE" = full ] && echo ' (memory-only, no model running)')" || bad "chat did not answer"
 if [ "$MODE" = full ]; then
   R=$(chat "teach: what colour is the zero test parrot = ultraviolet"); echo "$R" | head -c 300; echo
   R=$(chat "what colour is the zero test parrot"); echo "$R" | head -c 300; echo
@@ -117,28 +127,59 @@ journalctl -b -u lecore-chat --no-pager -o cat | grep -iE 'traceback|error|read-
 
 hdr "egress is blocked; loopback works"
 IF=$(ip -o link show | awk -F': ' '$2!="lo"{print $2; exit}')
+echo "--- NIC $IF as NetworkManager left it (DHCP must not have happened):"
+ip -4 -br addr show dev "$IF"
+nmcli -t -f GENERAL.STATE,IP4.ADDRESS device show "$IF" 2>/dev/null
+if ip -4 -o addr show dev "$IF" | grep -q inet; then bad "NIC got an IPv4 address on its own (DHCP leaked)"; else ok "no IPv4 address acquired (no DHCP)"; fi
+journalctl -b -u NetworkManager --no-pager -o cat | grep -iE 'dhcp|AF_PACKET|address family' | tail -n 6
 nmcli device set "$IF" managed no 2>/dev/null || true
 ip link set "$IF" up; ip addr flush dev "$IF"; ip addr add 10.0.2.15/24 dev "$IF"; ip route replace default via 10.0.2.2
 ip -br addr
-echo "--- with the zero-egress rules loaded:"
+echo "--- static address set by hand; zero-egress rules loaded:"
 OUT=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 -> $OUT"
-case "$OUT" in 2*|3*|4*) bad "outbound HTTPS succeeded with the firewall on" ;; *) BLOCKED=1 ;; esac
+case "$OUT" in 2*|3*|4*) bad "outbound HTTP succeeded with the firewall on" ;; *) BLOCKED=1 ;; esac
 OUT2=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://10.0.2.2/ 2>&1); echo "curl http://10.0.2.2 (gateway) -> $OUT2"
 getent ahosts example.com >/dev/null 2>&1 && bad "DNS resolution worked" || echo "DNS: no resolution (expected)"
 curl -fsS -m 5 -o /dev/null http://127.0.0.1:7860/ && ok "loopback works with the firewall on" || bad "loopback blocked"
 zero-egress status
-echo "--- control: firewall removed for 10 seconds to prove the path exists"
-nft list ruleset > /tmp/rules.saved
-nft delete table inet zero_egress
-OUT3=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall off) -> $OUT3"
-nft -f /etc/nftables.conf
-OUT4=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall restored) -> $OUT4"
-case "$OUT3" in
-  2*|3*|4*) [ "${BLOCKED:-0}" = 1 ] && case "$OUT4" in 2*|3*|4*) bad "egress open after restore" ;; *) ok "egress blocked by the firewall (control without it reached 1.1.1.1: HTTP $OUT3)" ;; esac ;;
-  *) warn "control failed (no internet from the CI VM?); blocked result inconclusive: $OUT / $OUT3" ;;
-esac
-nft list chain inet zero_egress output | grep counter
-ip addr flush dev "$IF"; nmcli device set "$IF" managed yes 2>/dev/null || true
+# The host copies the wire capture of the VM's NIC now: everything up to here ran with zero egress.
+echo "ZERO_SMOKE_PCAP_CHECKPOINT"
+sleep 15
+if [ "$MODE" = full ]; then
+  echo "--- control: firewall removed for one request to prove the path exists"
+  nft delete table inet zero_egress
+  OUT3=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall off) -> $OUT3"
+  nft -f /etc/nftables.conf
+  OUT4=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall restored) -> $OUT4"
+  case "$OUT3" in
+    2*|3*|4*) [ "${BLOCKED:-0}" = 1 ] && case "$OUT4" in 2*|3*|4*) bad "egress open after restore" ;; *) ok "egress blocked by the firewall (control without it reached 1.1.1.1: HTTP $OUT3)" ;; esac ;;
+    *) warn "control failed (no internet from the CI VM?); blocked result inconclusive: $OUT / $OUT3" ;;
+  esac
+  nft list chain inet zero_egress output | grep counter
+  ip addr flush dev "$IF"; nmcli device set "$IF" managed yes 2>/dev/null || true
+
+  echo "--- owner flow: sudo zero-egress open / close"
+  zero-egress open
+  zero-egress status
+  OK5=""; for i in $(seq 1 30); do
+    OUT5=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1)
+    case "$OUT5" in 2*|3*|4*) OK5=1; break ;; esac; sleep 2
+  done
+  echo "after zero-egress open: curl http://1.1.1.1 -> $OUT5; $(ip -4 -br addr show dev "$IF")"
+  zero-egress close
+  zero-egress status
+  sleep 3
+  OUT6=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "after zero-egress close: curl http://1.1.1.1 -> $OUT6"
+  NMRAF=$(systemctl show -p RestrictAddressFamilies --value NetworkManager.service)
+  if [ -n "$OK5" ] && case "$OUT6" in 2*|3*|4*) false ;; *) true ;; esac && echo "$NMRAF" | grep -q AF_PACKET; then
+    ok "zero-egress open (DHCP + internet work) and close (blocked again, NetworkManager packet sockets denied again)"
+  else
+    bad "zero-egress open/close: open=$OUT5 close=$OUT6 NM RestrictAddressFamilies='$NMRAF'"
+  fi
+else
+  [ "${BLOCKED:-0}" = 1 ] && ok "outbound HTTP to 1.1.1.1 blocked (no control step in this boot; the wire capture is the proof)"
+  ip addr flush dev "$IF"; nmcli device set "$IF" managed yes 2>/dev/null || true
+fi
 
 if [ "$MODE" = full ]; then
   hdr "provisioning a model inside the running system (provision/linux-add-models.sh --target /)"

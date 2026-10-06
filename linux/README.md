@@ -128,8 +128,13 @@ Enforced:
 - **nftables** (`/etc/nftables.conf`, table `inet zero_egress`): `output` policy **drop**, with only
   `oifname "lo"` accepted. The `input` and `forward` policies are drop too, with loopback accepted
   on input. It loads before `network-pre.target`. **Fail closed:** NetworkManager has
-  `Requires=nftables.service`, so if the rules do not load, no network comes up. DHCP is blocked as
-  well, so the laptop never gets an address.
+  `Requires=nftables.service`, so if the rules do not load, no network comes up.
+- **No raw frames:** DHCP clients send their first packets through raw packet sockets (`AF_PACKET`),
+  and those bypass nftables. The first CI boot showed this: the VM got a DHCP lease through the
+  firewall. NetworkManager therefore runs with `RestrictAddressFamilies=~AF_PACKET`. It cannot send
+  DHCP or any other raw frame, so the laptop never gets an address. CI records every frame the VM's
+  network card sends (QEMU `filter-dump`) and requires **zero** frames from power-on through all
+  tests, until the deliberate control step.
 - **Per-service:** `lecore-llama` and `lecore-chat` run with systemd `IPAddressDeny=any`
   (loopback only), even if the firewall is opened.
 
@@ -150,8 +155,10 @@ Disabled, removed or masked:
 | motd-news, popularity-contest, snapd, ModemManager, gnome-remote-desktop | not installed and/or masked |
 | Chromium | enterprise policy `/etc/chromium/policies/managed/zero.json`: no Safe Browsing pings, metrics, variations, component updates, sync, sign-in, search suggestions, translate, DNS-over-HTTPS, network prediction, media router or AI features; plus `--disable-background-networking --disable-component-update --no-pings` |
 
-The radios still exist. Wi-Fi can scan and associate, and Bluetooth works, but no IP packet can
-leave. Wi-Fi association and scans are 802.11 frames below the IP firewall.
+The radios still exist. The Wi-Fi driver and `wpa_supplicant` can scan and associate (802.11
+management and EAPOL frames, below IP), and Bluetooth works. No IP packet can leave, and there is no
+DHCP, so an association leads nowhere. To keep the radios silent too, switch them off (airplane mode,
+or `rfkill block all`).
 
 ### Opening egress (owner, root)
 
@@ -165,8 +172,12 @@ sudo zero-egress open --permanent   # allow it from now on (rewrites /etc/nftabl
 sudo zero-egress close              # back to zero egress (restores the shipped rules)
 ```
 
-The same by hand: `sudo nft delete table inet zero_egress` (until reboot), or edit
-`/etc/nftables.conf` and run `sudo systemctl restart nftables`. Opening the firewall does not
+`open` removes the nftables table. It also lifts NetworkManager's packet-socket restriction, through
+a drop-in in `/run` (or in `/etc` with `--permanent`), and restarts NetworkManager so DHCP can run.
+`close` undoes both. The same by hand: `sudo nft delete table inet zero_egress`, then remove the
+`RestrictAddressFamilies=~AF_PACKET` line from
+`/etc/systemd/system/NetworkManager.service.d/zero-egress.conf` and run
+`sudo systemctl daemon-reload && sudo systemctl restart NetworkManager`. Opening the firewall does not
 re-enable time sync, update timers or anything else listed above. The Zero AI services stay
 loopback-only either way.
 
@@ -233,18 +244,23 @@ accepts only in VMs. The shipped image is never written: boot A uses a copy-on-w
 boot B uses a throwaway copy.
 
 - **Boot A, pristine image, Secure Boot off, 40 GiB disk:** first boot (root grows to the disk,
-  machine-id, no users, gdm + gnome-initial-setup running); TTM limit written and applied, and the
-  initramfs order checked; nftables loaded; no TCP listener outside loopback; phone-home units
-  absent or masked; `lecore-llama` skipped cleanly with no model; leCore chat answering
-  memory-only, plus teach/recall; egress blocked (`curl https://1.1.1.1` fails, loopback works).
-  As a control, the firewall is lifted for one request to show the VM *can* reach 1.1.1.1 without
-  it. Then `provision/linux-add-models.sh --target /` installs a tiny test model
+  machine-id, no users, gdm + gnome-initial-setup running, Zero branding); TTM limit written and
+  applied, and the initramfs order checked; nftables loaded; NetworkManager denied packet sockets;
+  no IPv4 address acquired; no TCP/UDP listener outside loopback; phone-home units absent or masked;
+  `lecore-llama` skipped cleanly with no model; leCore chat answering memory-only, plus
+  teach/recall. Egress is then tested with a static address set by hand: `curl http://1.1.1.1`
+  fails, DNS fails, loopback works. The wire capture up to this point must contain **zero frames
+  from the VM**. As a control, the firewall is lifted for one request to show the VM *can* reach
+  1.1.1.1 without it. Then `zero-egress open` must give DHCP and internet, and `zero-egress close`
+  must block them again. Then `provision/linux-add-models.sh --target /` installs a tiny test model
   (SmolLM2-135M-Instruct Q4_K_M, 105 MB, CI only). `lecore-llama.path` starts llama-server, which
   serves `/v1/chat/completions`, and a chat question goes from leCore to llama-server over
   `LECORE_LLM_URL`. A screenshot of the first-boot screen is saved.
 - **Boot B, Secure Boot ON (OVMF + Microsoft keys):** the image is provisioned on the host with
   `--image` (forced to grow the image file). It must boot through shim/GRUB/kernel with Secure Boot
-  enforced and start llama-server at boot with the pre-provisioned model.
+  enforced (`mokutil --sb-state`: enabled; kernel lockdown: integrity) and start llama-server at
+  boot with the pre-provisioned model. It runs the same checks with no control step, so its whole
+  wire capture must contain zero frames from the VM.
 
 QEMU has no Strix Halo or Blackwell GPU. llama.cpp therefore runs on the CPU in CI, and nothing here
 proves GPU inference. The hardware notes above are about what is installed and built, not what was

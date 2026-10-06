@@ -78,6 +78,37 @@ print(json.dumps(x(cmd, args)))
 PY
 }
 
+GUEST_MAC=52:54:00:5a:e7:00
+
+wire_check() { # pcap label -> 0 if the guest sent no frame at all
+  python3 - "$1" "$2" "$GUEST_MAC" <<'PY'
+import struct, sys
+path, label, mac = sys.argv[1], sys.argv[2], bytes.fromhex(sys.argv[3].replace(":", ""))
+data = open(path, "rb").read()
+if len(data) < 24:
+    print("wire capture %s: empty file" % label); sys.exit(2)
+endian = "<" if data[:4] in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1") else ">"
+off, total, sent, rows = 24, 0, 0, []
+while off + 16 <= len(data):
+    _, _, incl, _ = struct.unpack(endian + "IIII", data[off:off + 16]); off += 16
+    f = data[off:off + incl]; off += incl; total += 1
+    if len(f) >= 14 and f[6:12] == mac:
+        sent += 1
+        et = struct.unpack(">H", f[12:14])[0]; d = "ethertype 0x%04x" % et
+        if et == 0x0800 and len(f) >= 34:
+            pr = f[23]; d = "IPv4 %s -> %s proto %d" % (".".join(map(str, f[26:30])), ".".join(map(str, f[30:34])), pr)
+            if pr in (6, 17) and len(f) >= 38: d += " dport %d" % struct.unpack(">H", f[36:38])[0]
+        elif et == 0x86dd and len(f) >= 54:
+            d = "IPv6 next-header %d to %s" % (f[20], f[38:54].hex())
+        elif et == 0x0806:
+            d = "ARP"
+        rows.append(d)
+print("wire capture %s: %d frames on the link, %d sent by the Zero VM" % (label, total, sent))
+for r in rows[:25]: print("  guest sent:", r)
+sys.exit(0 if sent == 0 else 1)
+PY
+}
+
 boot() { # name overlay mode secure(0|1)
   local name=$1 disk=$2 mode=$3 sb=$4 code vars machine extra=()
   if [ "$sb" = 1 ]; then
@@ -87,22 +118,28 @@ boot() { # name overlay mode secure(0|1)
     code=/usr/share/OVMF/OVMF_CODE_4M.fd; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/$name-vars.fd"
     machine="q35,accel=$ACCEL"
   fi
-  local log=$OUT/$name-serial.log sock=$OUT/$name-qmp.sock
-  rm -f "$log" "$sock"
+  local log=$OUT/$name-serial.log sock=$OUT/$name-qmp.sock pcap=$OUT/$name-net.pcap
+  rm -f "$log" "$sock" "$pcap" "$OUT/$name-net-zero-egress.pcap"
   echo "=== boot $name: mode=$mode secureboot=$sb"
   qemu-system-x86_64 -name "zero-$name" -machine "$machine" -cpu "$CPU" -smp 2 -m 4096 "${extra[@]}" \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="$code" \
     -drive if=pflash,format=raw,unit=1,file="$OUT/$name-vars.fd" \
     -drive file="$disk",if=none,id=disk0,format=qcow2 -device nvme,drive=disk0,serial=ZERO0001 \
     -drive file="$OUT/smoke-disk.img",if=virtio,format=raw,readonly=on \
-    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+    -netdev user,id=n0 -device virtio-net-pci,netdev=n0,mac=$GUEST_MAC \
+    -object filter-dump,id=dump0,netdev=n0,file="$pcap" \
     -device virtio-rng-pci -device virtio-vga -display none \
     -serial file:"$log" -qmp unix:"$sock",server=on,wait=off \
     -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.zero-smoke.service=$(unit_b64 "$mode")" \
     -smbios "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.graphical.target=$DROPIN_B64" \
     -no-reboot &
-  local pid=$! t=0 shot=0
+  local pid=$! t0=$SECONDS shot=0 next=300 ckpt=0 t
   while kill -0 "$pid" 2>/dev/null; do
+    t=$((SECONDS - t0))
+    if [ "$ckpt" = 0 ] && grep -q ZERO_SMOKE_PCAP_CHECKPOINT "$log" 2>/dev/null; then
+      cp --sparse=never "$pcap" "$OUT/$name-net-zero-egress.pcap"; ckpt=1
+      echo "  wire capture checkpoint at ${t}s (everything before the firewall control step)"
+    fi
     if grep -q ZERO_SMOKE_DONE "$log" 2>/dev/null; then
       sleep 5; qmp "$sock" screendump "{\"filename\": \"$OUT/$name-screen.png\", \"format\": \"png\"}" || true
       qmp "$sock" quit || true; break
@@ -115,22 +152,34 @@ boot() { # name overlay mode secure(0|1)
       qmp "$sock" screendump "{\"filename\": \"$OUT/$name-timeout.png\", \"format\": \"png\"}" || true
       qmp "$sock" quit || kill "$pid"; break
     fi
-    if [ $((t % 300)) = 0 ] && [ "$t" -gt 0 ]; then
-      shot=$((shot + 1)); qmp "$sock" screendump "{\"filename\": \"$OUT/$name-progress-$shot.png\", \"format\": \"png\"}" >/dev/null 2>&1 || true
+    if [ "$t" -ge "$next" ]; then
+      next=$((next + 300)); shot=$((shot + 1))
+      qmp "$sock" screendump "{\"filename\": \"$OUT/$name-progress-$shot.png\", \"format\": \"png\"}" >/dev/null 2>&1 || true
       echo "  ... ${t}s, serial log $(wc -l < "$log") lines"
     fi
-    sleep 10; t=$((t + 10))
+    sleep 2
   done
   wait "$pid" 2>/dev/null || true
   echo "--- serial log ($name), smoke section:"
   sed -n '/ZERO SMOKE TEST/,$p' "$log" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
-  grep -a "ZERO_SMOKE_RESULT" "$log" | tail -n1 | grep -q "RESULT: PASS"
+  local wire=0
+  echo "--- wire-level egress check ($name): every frame the VM's NIC sent from power-on to the checkpoint"
+  if [ -f "$OUT/$name-net-zero-egress.pcap" ]; then
+    wire_check "$OUT/$name-net-zero-egress.pcap" "$name power-on..checkpoint" || wire=1
+  else
+    echo "no checkpoint capture"; wire=1
+  fi
+  [ "$wire" = 0 ] && echo "WIRE PASS: boot $name: the VM sent 0 frames on its network link (power-on to checkpoint)" \
+                  || echo "WIRE FAIL: boot $name: the VM sent frames on its network link"
+  wire_check "$pcap" "$name whole boot incl. deliberate control traffic" >/dev/null 2>&1; true
+  grep -a "ZERO_SMOKE_RESULT" "$log" | tail -n1 | grep -q "RESULT: PASS" && [ "$wire" = 0 ]
 }
 
 RC=0
 # ---- A: pristine image, Secure Boot off ---------------------------------------------------------
 qemu-img create -q -f qcow2 -F raw -b "$IMG" "$OUT/a.qcow2" 40G
-boot a "$OUT/a.qcow2" full 0 || RC=1
+boot a "$OUT/a.qcow2" full 0 | tee "$OUT/a-console.txt" || RC=1
+grep -E "^(WIRE (PASS|FAIL)|wire capture)" "$OUT/a-console.txt" > "$OUT/a-wire.txt" || true
 rm -f "$OUT/a.qcow2"
 
 # ---- B: image copy provisioned on the host (--image, forced to grow), Secure Boot on ------------
@@ -140,13 +189,15 @@ bash "$REPO/provision/linux-add-models.sh" --tier pro --catalog "$SD/smoke-catal
   --image "$OUT/b.img" --reserve-gb 12 smoke-tiny || RC=1
 ls -ls "$OUT/b.img"; sgdisk -p "$OUT/b.img" | tail -n 3
 qemu-img create -q -f qcow2 -F raw -b "$OUT/b.img" "$OUT/b.qcow2" 30G
-boot b "$OUT/b.qcow2" sb 1 || RC=1
+boot b "$OUT/b.qcow2" sb 1 | tee "$OUT/b-console.txt" || RC=1
+grep -E "^(WIRE (PASS|FAIL)|wire capture)" "$OUT/b-console.txt" > "$OUT/b-wire.txt" || true
 rm -f "$OUT/b.qcow2" "$OUT/b.img"
 
 {
   echo "Zero Linux image smoke test ($(date -u +%Y-%m-%dT%H:%M:%SZ), QEMU $ACCEL, OVMF)"
   for n in a b; do
-    echo; echo "## boot $n"; grep -a -E 'SMOKE (PASS|FAIL|WARN)|ZERO_SMOKE_RESULT' "$OUT/$n-serial.log" | tr -d '\r' || echo "(no results)"
+    echo; echo "## boot $n"; grep -a -E 'SMOKE (PASS|FAIL|WARN)|ZERO_SMOKE_RESULT' "$OUT/$n-serial.log" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' || echo "(no results)"
+    [ -f "$OUT/$n-wire.txt" ] && cat "$OUT/$n-wire.txt"
   done
 } > "$OUT/smoke-report.txt"
 cat "$OUT/smoke-report.txt"

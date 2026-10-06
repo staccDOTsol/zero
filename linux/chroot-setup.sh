@@ -36,7 +36,7 @@ apt-get update
 # ------------------------------------------------------------------------------------------------
 log "Base system"
 apt_install systemd-sysv dbus dbus-user-session udev kmod sudo locales-all tzdata keyboard-configuration \
-  console-setup ca-certificates curl openssl nftables network-manager wpasupplicant iw wireless-regdb \
+  console-setup ca-certificates curl openssl nftables iproute2 network-manager wpasupplicant iw wireless-regdb \
   rfkill bluez cloud-guest-utils fdisk gdisk e2fsprogs dosfstools zstd xz-utils pciutils usbutils \
   less nano bash-completion python3 python3-venv mokutil efibootmgr initramfs-tools dconf-cli \
   xdg-user-dirs xdg-utils polkitd pkexec accountsservice
@@ -197,8 +197,17 @@ cat > /etc/fstab <<EOF
 UUID=$ROOT_FS_UUID  /             ext4   errors=remount-ro    0      1
 UUID=$ESP_UUID                             /boot/efi     vfat   umask=0077           0      1
 EOF
-# os-release: user-visible name. ID stays debian so tools keep working.
-sed -i -E 's/^PRETTY_NAME=.*/PRETTY_NAME="Zero (Debian GNU\/Linux 13 trixie)"/' /usr/lib/os-release
+# os-release: user-visible name and logo (first-boot welcome page, Settings > About). ID stays debian
+# so tools keep working.
+sed -i -E -e 's/^PRETTY_NAME=.*/PRETTY_NAME="Zero (Debian GNU\/Linux 13 trixie)"/' \
+          -e 's/^NAME=.*/NAME="Zero"/' -e '/^LOGO=/d' /usr/lib/os-release
+echo 'LOGO=zero' >> /usr/lib/os-release
+cat /usr/lib/os-release
+# GDM login screen: no Debian logo
+if [ -f /etc/gdm3/greeter.dconf-defaults ]; then
+  printf "\n[org/gnome/login-screen]\nlogo=''\n" >> /etc/gdm3/greeter.dconf-defaults
+  [ -x /usr/share/gdm/generate-config ] && /usr/share/gdm/generate-config || true
+fi
 
 log "systemd units"
 systemctl enable nftables.service lecore-llama.service lecore-llama.path lecore-chat.service \

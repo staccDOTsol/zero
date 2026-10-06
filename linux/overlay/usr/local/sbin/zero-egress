@@ -8,8 +8,19 @@
 # (IPAddressDeny=any in their systemd units).
 set -eu
 ZERO_RULES=/usr/lib/zero/nftables-zero.conf
+NMD=NetworkManager.service.d
+OPEN_DROPIN=zz-zero-egress-open.conf
+nm_packet_sockets() { # allow|deny  (DHCP needs packet sockets; see zero-egress.conf)
+  rm -f "/run/systemd/system/$NMD/$OPEN_DROPIN" "/etc/systemd/system/$NMD/$OPEN_DROPIN"
+  if [ "$1" = allow ]; then
+    d=/run/systemd/system/$NMD; [ "${2:-}" = --permanent ] && d=/etc/systemd/system/$NMD
+    mkdir -p "$d"
+    printf '# Zero: egress opened by root (zero-egress open%s)\n[Service]\nRestrictAddressFamilies=\n' "${2:+ $2}" > "$d/$OPEN_DROPIN"
+  fi
+  systemctl daemon-reload
+  systemctl restart NetworkManager.service || true
+}
 need_root() { [ "$(id -u)" = 0 ] || { echo "zero-egress: run as root (sudo zero-egress $*)" >&2; exit 1; }; }
-restart_net() { nmcli networking off >/dev/null 2>&1 || true; nmcli networking on >/dev/null 2>&1 || true; }
 case "${1:-status}" in
   status)
     if nft list table inet zero_egress >/dev/null 2>&1; then
@@ -17,6 +28,11 @@ case "${1:-status}" in
       nft list chain inet zero_egress output 2>/dev/null | grep -E 'policy|counter' | sed 's/^/  /'
     else
       echo "OPEN: the zero-egress rules are not loaded; this machine can reach the network."
+    fi
+    if systemctl show -p RestrictAddressFamilies --value NetworkManager.service 2>/dev/null | grep -q 'AF_PACKET'; then
+      echo "  NetworkManager: packet sockets denied (no DHCP)"
+    else
+      echo "  NetworkManager: packet sockets allowed"
     fi ;;
   open)
     need_root "$@"
@@ -26,7 +42,7 @@ case "${1:-status}" in
       echo "zero-egress: /etc/nftables.conf now allows all traffic (persistent)."
     fi
     nft delete table inet zero_egress 2>/dev/null || true
-    restart_net
+    nm_packet_sockets allow "${2:-}"
     echo "zero-egress: outbound traffic is ALLOWED$( [ "${2:-}" = "--permanent" ] || echo ' until the next reboot')."
     echo "  Note: time sync, package updates and other phone-home services stay disabled/masked."
     ;;
@@ -34,7 +50,7 @@ case "${1:-status}" in
     need_root "$@"
     install -m 0644 "$ZERO_RULES" /etc/nftables.conf
     nft -f /etc/nftables.conf
-    restart_net
+    nm_packet_sockets deny
     echo "zero-egress: outbound traffic is BLOCKED again."
     ;;
   help|-h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
