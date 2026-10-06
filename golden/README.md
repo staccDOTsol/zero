@@ -64,10 +64,13 @@ golden/build-golden.sh --os windows --tiers '["max"]' --windows-tag windows-YYYY
 
 It runs from a checkout of `staccDOTsol/lecore-plus` (the source of truth) with `gh` logged in:
 
-1. `golden-stage` (workflow in lecore-plus) copies the newest `linux-*` image parts and `windows-*`
-   ISO parts into the object store, `base/{linux,windows}/<tag>/`, each part sha256-checked.
-2. It copies `golden/`, `provision/` and `models/` into the private build repo
-   `kekloldyormarket/zero-golden` (the larger runners belong to that org) and pushes.
+1. It copies `golden/`, `provision/`, `models/` and `windows/` (with their workflows) into the private,
+   org-billed build repo `kekloldyormarket/zero-golden` and pushes. The larger runners belong to that
+   org, and the Windows base ISOs are built there too (`windows/ci/windows-image.yml`): they contain
+   Microsoft's installer and stay private.
+2. `golden-stage` copies the newest `linux-*` image parts (a release of lecore-plus) and `windows-*`
+   ISO parts (a release of zero-golden) into the object store, `base/{linux,windows}/<tag>/`, each part
+   sha256-checked.
 3. It dispatches `golden-linux` and `golden-windows` there: one job per tier x OS on `zero-golden-32`
    (a larger runner with KVM and a 2 TB SSD), up to the runner's parallel limit.
 

@@ -5,7 +5,8 @@ name: golden-windows-smoke
 # written in offline -> its sha256 re-read from the image -> the first boot on a larger overlay with
 # verify.ps1 (default model served and answering, chat through it, containment). Nothing is uploaded.
 # The real images (every catalog model, 96-core runners) are built by kekloldyormarket/zero-golden.
-# Not in the public mirror (staccDOTsol/zero): it downloads the Windows ISO.
+# Runs in kekloldyormarket/zero-golden (private, org-billed), where the windows-* releases are built;
+# never in the public mirror (staccDOTsol/zero): it downloads the Windows ISO.
 on:
   workflow_dispatch:
     inputs:

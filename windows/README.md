@@ -11,8 +11,9 @@ inside; the user sees "Zero".
 | `zero-hp-zbook-ultra-g1a-win11pro-<build>.iso` | HP ZBook Ultra G1a, AMD Ryzen AI Max+ 395, Radeon 8060S | Zero Pro, Zero Max |
 | `zero-lenovo-p16-gen3-win11pro-<build>.iso` | Lenovo ThinkPad P16 Gen 3, Core Ultra 9 275HX, RTX PRO 5000 Blackwell 24 GB | Zero Ultra |
 
-Built by [`.github/workflows/windows-image.yml`](../.github/workflows/windows-image.yml) and published
-to the **private** GitHub Release `windows-YYYYMMDD-<shortsha>`:
+Built by [`windows/ci/windows-image.yml`](ci/windows-image.yml), which runs in the private, org-billed
+build repo `kekloldyormarket/zero-golden` (`golden/build-golden.sh` copies it there), and published to
+the **private** GitHub Release `windows-YYYYMMDD-<shortsha>` of that repo:
 
 - `<iso>.part01`, `.part02`, … — each ISO in ≤ 1.9 GiB parts (release assets must be < 2 GiB)
 - `lecore-plus-windows-stack.zip` — the stack installer + model containment on its own, for imaging partners
@@ -212,7 +213,7 @@ The ISO never erases a disk by itself. To make a fully unattended factory stick,
 
 ## Building
 
-`workflow_dispatch` the **windows-image** workflow (`mode: full`). Inputs: `targets`, `iso_url` /
+`workflow_dispatch` the **windows-image** workflow in `kekloldyormarket/zero-golden` (`mode: full`). Inputs: `targets`, `iso_url` /
 `iso_sha256` (use your own copy of Microsoft's ISO if Microsoft refuses the runners), `publish`.
 `mode: probe` downloads and extracts every driver package and prints sha256s (to pin a new driver);
 pushes to `windows/**` run the stack build and the smoke test. Each image job: ADK Deployment Tools

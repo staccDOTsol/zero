@@ -6,8 +6,9 @@
 #
 # Runs from a checkout of staccDOTsol/lecore-plus (the source of truth) with `gh` logged in to an
 # account that can run workflows in staccDOTsol/lecore-plus and kekloldyormarket/zero-golden.
-#   1. picks the newest base releases of staccDOTsol/lecore-plus (or the tags given)
-#   2. stages them into the private object store (lecore-plus workflow golden-stage)
+#   1. picks the newest base releases (or the tags given): linux-* of staccDOTsol/lecore-plus,
+#      windows-* of kekloldyormarket/zero-golden (the Windows ISOs are built there: private, org-billed)
+#   2. stages them into the private object store (workflow golden-stage in each repo)
 #   3. copies golden/, provision/ and models/ of this checkout's HEAD into kekloldyormarket/zero-golden
 #      (golden/ci/golden-*.yml -> .github/workflows/) and pushes
 #   4. dispatches golden-linux and golden-windows there: one job per tier x OS on the zero-golden-32
@@ -52,24 +53,32 @@ if [ "$OS" != windows ]; then
   echo "Linux base:   $SOURCE_REPO $LINUX_TAG"; LIN_STAGE=$LINUX_TAG
 fi
 if [ "$OS" != linux ]; then
-  [ -n "$WINDOWS_TAG" ] || WINDOWS_TAG=$(newest "$SOURCE_REPO" windows-)
-  echo "Windows base: $SOURCE_REPO $WINDOWS_TAG"; WIN_STAGE=$WINDOWS_TAG
+  [ -n "$WINDOWS_TAG" ] || WINDOWS_TAG=$(newest "$BUILD_REPO" windows-)
+  echo "Windows base: $BUILD_REPO $WINDOWS_TAG"; WIN_STAGE=$WINDOWS_TAG
 fi
-# the bases into the object store (sha256-checked; parts already there are skipped)
-gh workflow run golden-stage.yml -R "$SOURCE_REPO" -f windows_tag="$WIN_STAGE" -f linux_tag="$LIN_STAGE"
-RUN=$(latest_run "$SOURCE_REPO" golden-stage.yml); echo "staging the bases: $RUN"
-gh run watch -R "$SOURCE_REPO" "${RUN##*/}" --exit-status >/dev/null
 
 echo "syncing $BUILD_REPO from $SOURCE_REPO@${SHA:0:7}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 gh repo clone "$BUILD_REPO" "$TMP/b" -- -q
-rm -rf "$TMP/b/golden" "$TMP/b/provision" "$TMP/b/models"
+rm -rf "$TMP/b/golden" "$TMP/b/provision" "$TMP/b/models" "$TMP/b/windows"
 mkdir -p "$TMP/b/.github/workflows"
-cp -R "$SRC/golden" "$SRC/provision" "$SRC/models" "$TMP/b/"
-cp "$SRC/golden/ci/golden-linux.yml" "$SRC/golden/ci/golden-windows.yml" "$SRC/golden/ci/golden-store-check.yml" "$TMP/b/.github/workflows/"
+cp -R "$SRC/golden" "$SRC/provision" "$SRC/models" "$SRC/windows" "$TMP/b/"
+cp "$SRC/golden/ci/golden-linux.yml" "$SRC/golden/ci/golden-windows.yml" "$SRC/golden/ci/golden-store-check.yml" \
+   "$SRC/golden/ci/golden-windows-smoke.yml" "$SRC/windows/ci/windows-image.yml" "$SRC/.github/workflows/golden-stage.yml" \
+   "$TMP/b/.github/workflows/"
 git -C "$TMP/b" add -A
 git -C "$TMP/b" diff --cached --quiet || git -C "$TMP/b" commit -q -m "sync golden build from $SOURCE_REPO@${SHA:0:7}"
 git -C "$TMP/b" push -q origin HEAD
+
+# the bases into the object store (sha256-checked; parts already there are skipped): the linux-*
+# release from this repo, the windows-* release from the build repo (where it is built)
+stage() { # repo windows_tag linux_tag
+  gh workflow run golden-stage.yml -R "$1" -f windows_tag="$2" -f linux_tag="$3"
+  local run; run=$(latest_run "$1" golden-stage.yml); echo "staging in $1: $run"
+  gh run watch -R "$1" "${run##*/}" --exit-status >/dev/null
+}
+[ "$LIN_STAGE" = none ] || stage "$SOURCE_REPO" none "$LIN_STAGE"
+[ "$WIN_STAGE" = none ] || stage "$BUILD_REPO" "$WIN_STAGE" none
 
 if [ "$OS" != windows ]; then
   gh workflow run golden-linux.yml -R "$BUILD_REPO" -f base_repo=store -f base_tag="$LINUX_TAG" -f tiers="$TIERS" -f upload="$UPLOAD"
