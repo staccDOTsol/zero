@@ -35,6 +35,7 @@ set -Eeuo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CATALOG=$HERE/../models/catalog.json
 CACHE=$PWD/model-cache
+ORIG_ARGS=("$@")
 TIER="" ALL=0 DEFAULT_ID="" MODE="" TARGET="" IMAGE="" GROW=0 VERIFY_TARGET=1 DRY=0 RESERVE_GB=2
 IDS=()
 
@@ -64,6 +65,13 @@ while [ $# -gt 0 ]; do
 done
 case "$TIER" in pro|max|ultra) ;; *) die "tier must be pro, max or ultra (use --all <tier> or --tier <tier>)" ;; esac
 [ -n "$MODE" ] || die "choose a target: --target <dir>, --image <file> or --download-only"
+if [ "$MODE" = image ] && [ "$DRY" = 0 ] && [ -z "${ZERO_PRIVATE_MOUNTS:-}" ]; then
+  # Mount the image in a private mount namespace, so no other namespace (systemd services) keeps a
+  # copy of the mount and the file system can be checked and grown safely.
+  [ "$(id -u)" = 0 ] || die "--image needs root (loop devices, mounting)"
+  export ZERO_PRIVATE_MOUNTS=1
+  exec unshare --mount --propagation private -- bash "$0" "${ORIG_ARGS[@]}"
+fi
 [ "$ALL" = 1 ] && [ ${#IDS[@]} -gt 0 ] && die "--all and an explicit model list are exclusive"
 [ "$ALL" = 1 ] || [ ${#IDS[@]} -gt 0 ] || die "no models: pass model ids or --all <tier>"
 [ -f "$CATALOG" ] || die "catalog not found: $CATALOG"

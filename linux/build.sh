@@ -22,6 +22,12 @@ R=$WORK/root
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (sudo)"
+# Work in a private mount namespace: otherwise systemd services' namespaces (udevd, resolved, ...)
+# receive copies of our mounts, keep the image's file system busy, and e2fsck cannot check it.
+if [ -z "${ZERO_PRIVATE_MOUNTS:-}" ]; then
+  export ZERO_PRIVATE_MOUNTS=1
+  exec unshare --mount --propagation private -- bash "$0" "$@"
+fi
 for t in mmdebstrap sgdisk mkfs.vfat mkfs.ext4 losetup curl git sha256sum dpkg-deb python3; do
   command -v "$t" >/dev/null || die "missing host tool: $t"
 done
