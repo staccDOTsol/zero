@@ -38,7 +38,7 @@ jobs:
           fi
           echo "release $TAG"
           sudo mkdir -p /mnt/g && sudo chown "$USER" /mnt/g && cd /mnt/g
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'SHA256SUMS-hp-zbook-ultra-g1a.txt'
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'SHA256SUMS-hp-zbook-ultra-g1a.txt' -O - | tr -d '\r' > SHA256SUMS-hp-zbook-ultra-g1a.txt
           ISO=$(awk '$2 ~ /\.iso$/ {print $2}' SHA256SUMS-hp-zbook-ultra-g1a.txt)
           for p in $(awk '$2 ~ /\.iso\.part[0-9]+$/ {print $2}' SHA256SUMS-hp-zbook-ultra-g1a.txt); do
             gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$p"
