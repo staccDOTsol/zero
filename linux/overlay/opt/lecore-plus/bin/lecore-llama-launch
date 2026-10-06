@@ -28,6 +28,18 @@ while [ "$i" -lt 30 ]; do
   sleep 1; i=$((i + 1))
 done
 
+# Builds the catalog marks "offload" for this tier (Zero Ultra: MoE models larger than the 24 GB GPU)
+# also get LLAMA_OFFLOAD_ARGS (default --cpu-moe: expert weights in system RAM, the rest on the GPU).
+offload=""
+if [ -f "$MODELS/zero-models.json" ] && command -v python3 >/dev/null; then
+  speed=$(python3 -c 'import json, sys
+m = json.load(open(sys.argv[1]))
+print(next((e.get("speed") or "" for e in m.get("models", []) if e["files"][0]["name"] == sys.argv[2]), ""))' \
+    "$MODELS/zero-models.json" "$name" 2>/dev/null || true)
+  [ "$speed" = offload ] && offload=${LLAMA_OFFLOAD_ARGS-"--cpu-moe"}
+fi
+[ -n "$offload" ] && echo "lecore-llama: $name is an offload build for this tier: adding $offload" >&2
+
 export LD_LIBRARY_PATH="$LLAMA${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# shellcheck disable=SC2086  # LLAMA_EXTRA_ARGS is a word list on purpose (see /etc/lecore-plus/llama.env)
-exec "$LLAMA/llama-server" --host 127.0.0.1 --port 8080 -ngl 999 -m "$MODELS/$name" ${LLAMA_EXTRA_ARGS:-}
+# shellcheck disable=SC2086  # word lists on purpose (see /etc/lecore-plus/llama.env)
+exec "$LLAMA/llama-server" --host 127.0.0.1 --port 8080 -ngl 999 -m "$MODELS/$name" $offload ${LLAMA_EXTRA_ARGS:-}

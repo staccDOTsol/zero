@@ -60,7 +60,8 @@ current zstd, since 128 MiB is the default decode window. It does no harm.
    ```
 5. Optional, before the first boot: add models (section 5). Then power off and remove the stick.
 
-Firmware settings: UEFI boot (the default on both models). Secure Boot can stay **on** for Zero
+Firmware settings: UEFI boot (the default on both models). Turn network boot (PXE/IPv4/IPv6 stack)
+off; see section 6. Secure Boot can stay **on** for Zero
 Pro/Max. On Zero Ultra it must be **off**, or the NVIDIA driver must be enrolled once. See
 "Secure Boot" in `linux/README.md`. The image boots through the removable-media path
 `\EFI\BOOT\BOOTX64.EFI` and writes no firmware boot entries.
@@ -154,7 +155,11 @@ The usual inputs are one image per SKU plus a written procedure. For Zero that m
    laptops' drives. If the duplicator copies sector by sector, the copy is exact. If it copies used
    blocks only, that is fine too, because the file systems are ext4 and vfat.
 3. **BIOS settings.** UEFI boot. Secure Boot on for Pro/Max. For Ultra, Secure Boot off, or on with
-   the NVIDIA MOK enrollment done by the owner (see the README).
+   the NVIDIA MOK enrollment done by the owner (see the README). **Network boot off:** disable
+   PXE / HTTP boot / "UEFI IPv4 and IPv6 network stack" and Wake-on-LAN. Zero's OS sends nothing,
+   but firmware with a network stack sends IPv6 neighbor-discovery frames at power-on. CI sees
+   exactly that from the virtual machine's UEFI. On the ZBook this is under
+   Advanced → Boot Options / Network. On the ThinkPad it is under Config → Network.
 4. **No boot before shipping.** The first boot is the owner's: gnome-initial-setup creates the
    account and the root file system grows to fill the disk.
 5. **Per release.** Build a new golden image when the image or `models/catalog.json` changes.

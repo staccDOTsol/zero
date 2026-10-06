@@ -133,8 +133,14 @@ Enforced:
   and those bypass nftables. The first CI boot showed this: the VM got a DHCP lease through the
   firewall. NetworkManager therefore runs with `RestrictAddressFamilies=~AF_PACKET`. It cannot send
   DHCP or any other raw frame, so the laptop never gets an address. CI records every frame the VM's
-  network card sends (QEMU `filter-dump`) and requires **zero** frames from power-on through all
-  tests, until the deliberate control step.
+  network card sends (QEMU `filter-dump`). It requires **zero** frames from the OS, from kernel start
+  through all tests, up to the deliberate control step. It also requires the kernel's NIC
+  `tx_packets` counter to read 0.
+- **Firmware is outside the image.** In CI the UEFI firmware (OVMF) sends 2 IPv6 frames (DAD
+  neighbor solicitation and MLD report) when its own network stack binds to the NIC. That happens
+  about 2.5 s after power-on, before GRUB and the kernel. Laptop firmware with network boot enabled
+  can do the same. Turn off **network boot / PXE / UEFI IPv4+IPv6 network stack** in the BIOS (see
+  `flash.md`).
 - **Per-service:** `lecore-llama` and `lecore-chat` run with systemd `IPAddressDeny=any`
   (loopback only), even if the firewall is opened.
 
@@ -210,10 +216,14 @@ Models are not in the image (see the top-level README). The imaging station runs
 
 On the laptop, `zero-model list` and `sudo zero-model use <id>` switch the served model.
 
-Zero Ultra builds marked `"speed": "offload"` (larger than the 24 GB GPU) need llama.cpp to keep part
-of the model in system RAM. The unit always passes `-ngl 999` as specified. llama.cpp b11430's
-default `--fit on` can only change arguments that were not set. If such a model does not load, add
-`LLAMA_EXTRA_ARGS="--n-cpu-moe <N>"` in `/etc/lecore-plus/llama.env`. **Not verified on hardware.**
+Zero Ultra builds marked `"speed": "offload"` are all MoE models larger than the 24 GB GPU (63–98
+GB). llama.cpp b11430's `--fit` can only reduce the context when `-ngl` is set, so `-ngl 999` alone
+would try to put the whole model on the GPU and fail. For a model whose build is marked `offload` in
+`zero-models.json`, the launcher therefore adds `LLAMA_OFFLOAD_ARGS` (default `--cpu-moe`, set in
+`/etc/lecore-plus/llama.env`). `-ngl 999` stays: attention, shared weights and the KV cache sit on
+the RTX PRO 5000, and the expert weights sit in the 128 GB system RAM. "Fast" builds and every
+Pro/Max build get exactly `-ngl 999`. **Not verified on hardware.** Expect the offload models to be
+limited by DDR5 bandwidth.
 
 ## Building
 

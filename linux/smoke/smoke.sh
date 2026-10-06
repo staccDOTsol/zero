@@ -22,6 +22,8 @@ chat() { curl -sS --max-time 900 -H 'Content-Type: application/json' -d "$(pytho
 
 hdr "ZERO SMOKE TEST ($MODE)"
 echo "ZERO_SMOKE_STARTED $MODE"
+# host clock time at which the kernel started (wall clock minus uptime; QEMU's RTC follows the host)
+echo "ZERO_SMOKE_KERNEL_START $(awk -v now="$(date +%s.%N)" '{printf "%.3f", now - $1}' /proc/uptime)"
 grep PRETTY_NAME /etc/os-release; uname -a
 cat /usr/share/lecore-plus/versions.txt 2>/dev/null
 echo "secure boot: $(mokutil --sb-state 2>&1 | tr '\n' ' ')"
@@ -142,6 +144,8 @@ OUT2=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://10.0.2.2/ 2>&1); echo
 getent ahosts example.com >/dev/null 2>&1 && bad "DNS resolution worked" || echo "DNS: no resolution (expected)"
 curl -fsS -m 5 -o /dev/null http://127.0.0.1:7860/ && ok "loopback works with the firewall on" || bad "loopback blocked"
 zero-egress status
+TX=$(cat "/sys/class/net/$IF/statistics/tx_packets"); echo "NIC $IF tx_packets since boot: $TX"
+[ "$TX" = 0 ] && ok "the OS sent 0 frames on its network card since boot (kernel NIC counter)" || bad "the OS sent $TX frames on $IF"
 # The host copies the wire capture of the VM's NIC now: everything up to here ran with zero egress.
 echo "ZERO_SMOKE_PCAP_CHECKPOINT"
 sleep 15
@@ -202,7 +206,13 @@ else
 fi
 wait_http http://127.0.0.1:8080/health 300 && ok "llama-server /health OK" || bad "llama-server not healthy"
 systemctl show lecore-llama.service -p ActiveState -p NRestarts -p MainPID
-ps -o args= -p "$(systemctl show -p MainPID --value lecore-llama.service)" 2>/dev/null
+ARGS=$(ps -ww -o args= -p "$(systemctl show -p MainPID --value lecore-llama.service)" 2>/dev/null); echo "$ARGS"
+case "$MODE" in
+  full) echo "$ARGS" | grep -qE -- '--host 127\.0\.0\.1 --port 8080 -ngl 999 -m /var/lib/lecore-plus/models/[^ ]+$' \
+          && ok "llama-server command line is exactly --host 127.0.0.1 --port 8080 -ngl 999 -m <model>" || bad "llama-server args: $ARGS" ;;
+  sb)   echo "$ARGS" | grep -qE -- '-ngl 999 -m /var/lib/lecore-plus/models/[^ ]+ --cpu-moe' \
+          && ok "offload build: launcher added --cpu-moe (and kept -ngl 999)" || bad "offload args missing: $ARGS" ;;
+esac
 curl -s http://127.0.0.1:8080/v1/models | head -c 400; echo
 CC=$(curl -s --max-time 300 -H 'Content-Type: application/json' \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":24,"temperature":0}' \

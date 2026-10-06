@@ -38,6 +38,8 @@ cat > "$SD/smoke-catalog.json" <<EOF
                         "files": [{"path": "$TEST_FILE", "bytes": $TEST_BYTES, "sha256": "$TEST_SHA"}]},
               "max": null, "ultra": null}}]}
 EOF
+# boot B: same file, but marked as an "offload" build to exercise the launcher's LLAMA_OFFLOAD_ARGS path
+sed 's/"speed": "fast"/"speed": "offload"/' "$SD/smoke-catalog.json" > "$SD/smoke-catalog-offload.json"
 echo "--- host: provision/linux-add-models.sh --download-only (downloads + sha256 check)"
 bash "$REPO/provision/linux-add-models.sh" --tier pro --catalog "$SD/smoke-catalog.json" \
   --cache "$SD/cache" --download-only smoke-tiny
@@ -80,20 +82,23 @@ PY
 
 GUEST_MAC=52:54:00:5a:e7:00
 
-wire_check() { # pcap label -> 0 if the guest sent no frame at all
-  python3 - "$1" "$2" "$GUEST_MAC" <<'PY'
+wire_check() { # pcap label kernel-start-epoch -> 0 if the OS sent no frame (frames before the kernel are firmware)
+  python3 - "$1" "$2" "$GUEST_MAC" "${3:-0}" <<'PY'
 import struct, sys
 path, label, mac = sys.argv[1], sys.argv[2], bytes.fromhex(sys.argv[3].replace(":", ""))
+kstart = float(sys.argv[4]) - 1.0          # 1 s allowance: the guest clock comes from the RTC (1 s resolution)
 data = open(path, "rb").read()
 if len(data) < 24:
     print("wire capture %s: empty file" % label); sys.exit(2)
 endian = "<" if data[:4] in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1") else ">"
-off, total, sent, rows = 24, 0, 0, []
+off, total, sent, fw, rows = 24, 0, 0, 0, []
 while off + 16 <= len(data):
-    _, _, incl, _ = struct.unpack(endian + "IIII", data[off:off + 16]); off += 16
+    ts, us, incl, _ = struct.unpack(endian + "IIII", data[off:off + 16]); off += 16
     f = data[off:off + incl]; off += incl; total += 1
     if len(f) >= 14 and f[6:12] == mac:
-        sent += 1
+        before = ts + us / 1e6 < kstart
+        if before: fw += 1
+        else: sent += 1
         et = struct.unpack(">H", f[12:14])[0]; d = "ethertype 0x%04x" % et
         if et == 0x0800 and len(f) >= 34:
             pr = f[23]; d = "IPv4 %s -> %s proto %d" % (".".join(map(str, f[26:30])), ".".join(map(str, f[30:34])), pr)
@@ -102,9 +107,10 @@ while off + 16 <= len(data):
             d = "IPv6 next-header %d to %s" % (f[20], f[38:54].hex())
         elif et == 0x0806:
             d = "ARP"
-        rows.append(d)
-print("wire capture %s: %d frames on the link, %d sent by the Zero VM" % (label, total, sent))
-for r in rows[:25]: print("  guest sent:", r)
+        rows.append(("before the kernel started (UEFI firmware): " if before else "by the OS: ") + d)
+print("wire capture %s: %d frames on the link; sent by the VM: %d by the OS, %d by the UEFI firmware before the kernel started"
+      % (label, total, sent, fw))
+for r in rows[:25]: print("  sent", r)
 sys.exit(0 if sent == 0 else 1)
 PY
 }
@@ -165,12 +171,13 @@ boot() { # name overlay mode secure(0|1)
   local wire=0
   echo "--- wire-level egress check ($name): every frame the VM's NIC sent from power-on to the checkpoint"
   if [ -f "$OUT/$name-net-zero-egress.pcap" ]; then
-    wire_check "$OUT/$name-net-zero-egress.pcap" "$name power-on..checkpoint" || wire=1
+    local ks; ks=$(grep -a -o 'ZERO_SMOKE_KERNEL_START [0-9.]*' "$log" | tail -n1 | cut -d' ' -f2)
+    wire_check "$OUT/$name-net-zero-egress.pcap" "$name power-on..checkpoint" "${ks:-0}" || wire=1
   else
     echo "no checkpoint capture"; wire=1
   fi
-  [ "$wire" = 0 ] && echo "WIRE PASS: boot $name: the VM sent 0 frames on its network link (power-on to checkpoint)" \
-                  || echo "WIRE FAIL: boot $name: the VM sent frames on its network link"
+  [ "$wire" = 0 ] && echo "WIRE PASS: boot $name: the OS sent 0 frames on its network link (kernel start to checkpoint)" \
+                  || echo "WIRE FAIL: boot $name: the OS sent frames on its network link"
   wire_check "$pcap" "$name whole boot incl. deliberate control traffic" >/dev/null 2>&1; true
   grep -a "ZERO_SMOKE_RESULT" "$log" | tail -n1 | grep -q "RESULT: PASS" && [ "$wire" = 0 ]
 }
@@ -185,7 +192,7 @@ rm -f "$OUT/a.qcow2"
 # ---- B: image copy provisioned on the host (--image, forced to grow), Secure Boot on ------------
 echo "--- host: provision/linux-add-models.sh --image (on a throwaway copy)"
 cp --sparse=always "$IMG" "$OUT/b.img"
-bash "$REPO/provision/linux-add-models.sh" --tier pro --catalog "$SD/smoke-catalog.json" --cache "$SD/cache" \
+bash "$REPO/provision/linux-add-models.sh" --tier pro --catalog "$SD/smoke-catalog-offload.json" --cache "$SD/cache" \
   --image "$OUT/b.img" --reserve-gb 12 smoke-tiny || RC=1
 ls -ls "$OUT/b.img"; sgdisk -p "$OUT/b.img" | tail -n 3
 qemu-img create -q -f qcow2 -F raw -b "$OUT/b.img" "$OUT/b.qcow2" 30G
