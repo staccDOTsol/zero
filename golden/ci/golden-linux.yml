@@ -115,7 +115,7 @@ jobs:
           KEY="$P/zero-$TIER-linux.img.zst"
           SIZE=$(stat -c%s zero.img)
           SRCREPO=$BASE_REPO; [ "$BASE_REPO" = s3 ] && SRCREPO=staccDOTsol/lecore-plus
-          aws configure set default.s3.max_concurrent_requests 32
+          aws configure set default.s3.max_concurrent_requests 64
           aws configure set default.s3.multipart_chunksize 128MB
           tee >(sha256sum | awk '{print $1}' > raw.sha256) < zero.img | zstd -T0 -3 -c \
             | tee >(sha256sum | awk '{print $1}' > zst.sha256) >(wc -c > zst.bytes) \

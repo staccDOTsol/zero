@@ -369,7 +369,7 @@ if [ "$UPLOAD" = 1 ]; then
   P=${PREFIX%/}
   KEY=$P/zero-$TIER-windows.img.zst
   say "streaming to s3://$BUCKET/$KEY (raw sha256 + zstd)"
-  aws configure set default.s3.max_concurrent_requests 32
+  aws configure set default.s3.max_concurrent_requests 64
   aws configure set default.s3.multipart_chunksize 128MB
   tee >(sha256sum | awk '{print $1}' > "$WORK/raw.sha256") < "$DISK" | zstd -T0 -3 -c \
     | tee >(sha256sum | awk '{print $1}' > "$WORK/zst.sha256") >(wc -c > "$WORK/zst.bytes") \
