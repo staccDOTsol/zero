@@ -266,7 +266,7 @@ try {
 
     Write-WinSWConfig -Path (Join-Path $svcDir 'lecore-llama.xml') -Id 'lecore-llama' `
         -Name "$ProductName model server (llama.cpp)" `
-        -Description 'llama.cpp llama-server (Vulkan) on 127.0.0.1:8080 for the model named in C:\ProgramData\leCore+\model.txt. Stops cleanly when no model is configured.' `
+        -Description 'llama.cpp llama-server (Vulkan) on 127.0.0.1:8080 for the model named in C:\ProgramData\leCore+\model.txt. With no model configured it only waits (nothing listens).' `
         -Executable $ps -Arguments ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $binDir 'run-llama.ps1')) `
         -WorkDir (Join-Path $DataRoot 'work') -Env @{ LECORE_PLUS_DATA = $DataRoot; LECORE_PLUS_ROOT = $InstallRoot }
 
@@ -318,7 +318,7 @@ try {
     if (-not $NoStart) {
         Say 'starting services'
         Start-Service -Name 'lecore-chat'
-        # With no model configured the launcher exits 0 at once and the service stops cleanly.
+        # With no model configured run-llama.ps1 only waits for one; nothing listens on :8080.
         try { Start-Service -Name 'lecore-llama' } catch { Say "lecore-llama: $($_.Exception.Message)" }
     }
 

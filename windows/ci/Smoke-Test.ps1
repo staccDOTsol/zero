@@ -81,10 +81,14 @@ $nl = & (Join-Path $root 'python\python.exe') -X utf8 -c "import os; os.environ[
 Check 'nltk.download is an offline no-op; corpora pre-staged' (($nl -join ' ') -match '^True False \d+') ($nl -join ' ')
 
 # 2. llama with no model -------------------------------------------------------------------------
+function Test-Port([int]$Port) {
+    $c = New-Object Net.Sockets.TcpClient
+    try { $c.Connect('127.0.0.1', $Port); return $true } catch { return $false } finally { $c.Close() }
+}
 Start-Sleep -Seconds 5
 $llamaSvc = Get-Service lecore-llama
-$llamaOut = Tail (Join-Path $logs 'lecore-llama.out.log') 5
-Check 'llama service, no model configured: clean no-op' ($llamaSvc.Status -eq 'Stopped' -and $llamaOut -match 'no model configured') "status=$($llamaSvc.Status); log: $llamaOut"
+$llamaOut = Tail (Join-Path $logs 'lecore-llama.out.log') 3
+Check 'llama service, no model configured: clean no-op (waits, nothing on :8080)' ($llamaSvc.Status -eq 'Running' -and $llamaOut -match 'no model configured' -and -not (Test-Port 8080)) "status=$($llamaSvc.Status); port 8080 open=$(Test-Port 8080); log: $llamaOut"
 
 # 3. chat memory-only ----------------------------------------------------------------------------
 $status = Wait-Http 'http://127.0.0.1:7860/zero/status' 240
@@ -118,10 +122,9 @@ if (Test-Path $realCat) {
     }
 }
 
-# 5. llama with the model -------------------------------------------------------------------------
-Start-Service lecore-llama
+# 5. llama with the model (the service picks the new model.txt up by itself) ----------------------
 $models = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
-Check 'llama-server /v1/models answers' ($models -and $models.Content -match [regex]::Escape([IO.Path]::GetFileNameWithoutExtension($tm.path))) $(if ($models) { $models.Content.Substring(0, [Math]::Min(300, $models.Content.Length)) } else { Tail (Join-Path $logs 'lecore-llama.out.log') 30 })
+Check 'llama service started the provisioned model by itself; /v1/models answers' ($models -and $models.Content -match [regex]::Escape([IO.Path]::GetFileNameWithoutExtension($tm.path))) $(if ($models) { $models.Content.Substring(0, [Math]::Min(300, $models.Content.Length)) } else { Tail (Join-Path $logs 'lecore-llama.out.log') 30 })
 $dev = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices } | Out-String
 Check 'llama.cpp devices on this runner (informational)' $true (($dev -split "`n" | Where-Object { $_ -match 'Vulkan|device|CPU|load_backend' }) -join ' / ')
 try {

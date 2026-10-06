@@ -77,7 +77,7 @@ Experience" customization: the ISO's own `autounattend.xml` already does that jo
    (`C:\Windows\Setup\Scripts\lecore-plus-specialize.log`, `C:\ProgramData\leCore+\logs\install-*.log`).
 3. OOBE: region/keyboard, then the owner names the local account. No network, no Microsoft account.
 4. At sign-in Zero opens (Edge app window on `http://127.0.0.1:7860`). With no model on the disk
-   the chat runs memory-only and the model service stops cleanly.
+   the chat runs memory-only and the model service just waits for one.
 5. Add the models (next section) before the laptop leaves the station.
 
 ## Models
@@ -108,7 +108,7 @@ them onto the laptop. **Every model that fits a tier is preloaded.**
 `windows-add-models.ps1 -All <tier>` once onto it, then capture that disk with your imaging tool
 and clone it to the other laptops of the same tier (a Pro golden image and a Max golden image from the
 HP ISO, an Ultra golden image from the Lenovo ISO). Run one load test per model on the golden image
-before shipping (`Start-Service lecore-llama` after editing `model.txt`, then
+before shipping (edit `model.txt`, `Restart-Service lecore-llama`, then
 `Invoke-RestMethod http://127.0.0.1:8080/v1/models`).
 
 ## What runs on the laptop
@@ -118,9 +118,10 @@ before shipping (`Start-Service lecore-llama` after editing `model.txt`, then
 | Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model>` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
 | Zero chat | `lecore-chat` → `lecore_plus_chat.py` → leCore `chat_server.py` | 127.0.0.1:7860 | `C:\Program Files\leCore+\lecore\` (leCore `21abb4f`, MIT) on Python 3.13.16 embeddable |
 
-- Both are automatic services with restart-on-failure. No model configured → `lecore-llama` logs why
-  and stops (exit 0); `Start-Service lecore-llama` after adding one. Extra llama-server flags (one per
-  line) go in `C:\ProgramData\leCore+\llama-args.txt`.
+- Both are automatic services with restart-on-failure. No model configured → `lecore-llama` is a clean
+  no-op: nothing listens on :8080, it logs why and checks `model.txt` every 15 s, so a model added at
+  imaging time starts by itself. After *changing* `model.txt`: `Restart-Service lecore-llama`. Extra
+  llama-server flags (one per line) go in `C:\ProgramData\leCore+\llama-args.txt`.
 - The chat runs leCore's own `chat_server.py` unmodified. At the pinned commit it does not read
   `LECORE_LLM_URL` itself, so the launcher attaches leCore's `remote_llm` rung pointed at
   `LECORE_LLM_URL=http://127.0.0.1:8080/v1`; with no model (or llama-server down) the rung returns
