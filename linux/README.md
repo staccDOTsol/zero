@@ -21,8 +21,8 @@ chat. The model's input and output never leave the laptop. The rest of the OS ne
 | llama.cpp **b11430**, `llama-b11430-bin-ubuntu-vulkan-x64.tar.gz` (sha256 pinned in `config.env`) | `/opt/lecore-plus/llama/` | `lecore-llama.service` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m /var/lib/lecore-plus/models/<file>` |
 | leCore at commit `21abb4f4bdbe98cad0ec223bec9cab28148e73d9` (MIT), unmodified | `/opt/lecore-plus/lecore/`, venv `/opt/lecore-plus/venv/` | `lecore-chat.service` → leCore `chat_server.py` on `127.0.0.1:7860`, `LECORE_LLM_URL=http://127.0.0.1:8080/v1` |
 | Zero app window | `/etc/xdg/autostart/zero.desktop`, launcher "Zero" | Chromium `--app=http://127.0.0.1:7860/` for every user at login |
-| Models (GGUF) | `/var/lib/lecore-plus/models/` + `zero-models.json` | added at imaging time by `provision/linux-add-models.sh`, never in the image |
-| Default model | `/etc/lecore-plus/model` (one line: a file name in the models dir) | written by provisioning; `sudo zero-model use <id>` changes it |
+| Models (GGUF) | `/var/lib/lecore-plus/models/` + `zero-models.json` | every model of the tier, written into the tier's golden image (`golden/`) by `provision/linux-add-models.sh --all <tier> --image`; the base release image has none |
+| Default model | `/etc/lecore-plus/model` (one line: a file name in the models dir) | the catalog default of the tier, set by the golden build; `sudo zero-model use <id>` changes it |
 
 ### Services
 
@@ -202,8 +202,10 @@ To check on a laptop: `sudo nft list table inet zero_egress` (the drop counters)
 
 ## Models
 
-Models are not in the image (see the top-level README). The imaging station runs
-`provision/linux-add-models.sh` (see `flash.md`):
+Laptops ship the **golden image** of their tier (see the top-level README and `flash.md`): this
+image plus every catalog model of the tier, with the tier's default selected, so `lecore-llama` serves
+the default model from the first boot. The golden build (`golden/ci/golden-linux.yml`) puts the
+models in with `provision/linux-add-models.sh --all <tier> --image`, which also does service work:
 
 - `--all <tier>`: every model with a build for that tier. The default is the catalog's
   `default_for` model unless you pass `--default <id>`.

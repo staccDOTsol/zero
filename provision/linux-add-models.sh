@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # provision/linux-add-models.sh -- put catalog models onto a Zero Linux disk at imaging time.
 #
-# Runs on the IMAGING HOST (which has network). Downloads GGUF files from Hugging Face into a local
+# Runs on a build or service host with network. Downloads GGUF files from Hugging Face into a local
 # cache, checks every file's size and sha256 against models/catalog.json, copies them into the
 # target's /var/lib/lecore-plus/models/, re-checks the copies, writes the model manifest
-# (zero-models.json) and the default model (/etc/lecore-plus/model). The laptop never downloads.
+# (zero-models.json) and the default model (/etc/lecore-plus/model). The golden build
+# (golden/ci/golden-linux.yml) runs it with --all <tier> --image to put every model of a tier into
+# the image, so laptops ship with them and download nothing.
 #
 #   linux-add-models.sh --all <tier> [--default <id>] TARGET [options]
 #   linux-add-models.sh --tier <tier> [--default <id>] TARGET [options] <model-id>...

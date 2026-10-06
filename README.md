@@ -40,15 +40,37 @@ Install layout:
   the two Zero services, SYSTEM and Administrators); the chat answers only `Host: 127.0.0.1:7860` /
   `localhost:7860`.
 
-## Models are not baked into the image
+## Every model ships on the disk: golden images
 
-Model files are 10–70 GB each; GitHub release assets cap at 2 GiB a file and runners have
-limited disk space. The images ship without models. The imaging station runs
-`provision/` with the model ids the customer checked on the order page. It downloads them
-from Hugging Face on the **imaging station**, checks each sha256 and copies them onto the
-laptop. The laptop itself never downloads anything.
+There is no model menu at order time. Each tier ships with **every catalog model that fits it**
+(`models/catalog.json`: Pro 8 models / about 174 GB, Max 15 / about 798 GB, Ultra 15 / about 719 GB),
+and the laptop opens with the tier's default model (`default_for` in the catalog). The models are
+written into the factory image itself, so a laptop works the moment it is turned on: nothing is
+downloaded on the laptop, and the default model is already being served on 127.0.0.1 at the first
+boot.
 
-`models/catalog.json` is the menu; the order page's checkboxes come from it.
+What a distributor receives is one **golden image per tier and OS**, six in all (Pro, Max, Ultra x
+Linux, Windows). Each is a single raw GPT disk image (`zero-<tier>-<os>.img.zst`, zstd-compressed)
+that the imaging team writes straight onto the laptop's NVMe (`zstd -dc | dd`, or any sector-copy
+duplicator). Nothing has to be assembled or added by hand. On the first boot:
+
+- **Linux**: the root partition grows to fill the NVMe, a per-machine llama-server API key is made,
+  GNOME's setup assistant creates the owner's account, and the default model is already running.
+- **Windows**: the image is generalized (`sysprep /generalize /oobe`), so each laptop specializes on
+  its first boot (new SID, its drivers from the driver store, a per-machine API key), installs the
+  Windows 11 Pro key from its own firmware, grows C: to fill the NVMe, and shows OOBE for the owner's
+  local account. The model service and the chat are already running.
+
+The images are built by `golden/build-golden.sh` (one command; see [`golden/README.md`](golden/README.md))
+on GitHub Actions runners with KVM. Every image is checked before it is uploaded: every model file is
+read back from the image and its sha256 compared with the catalog, then the image is booted for its
+first boot in QEMU/KVM on a drive the size of the laptop's NVMe, and the default model must answer
+on 127.0.0.1:8080, the chat must answer through it on 127.0.0.1:7860, and the zero-egress
+confinement must hold. The images are kept in a private S3 bucket with a manifest (sizes, sha256,
+base release tags, catalog version).
+
+`provision/` (adding models to a disk or image by hand) is what the golden builds use for Linux and
+remains for service work, e.g. putting a different default on one laptop.
 
 ## Layout
 
@@ -56,5 +78,6 @@ laptop. The laptop itself never downloads anything.
 models/catalog.json      model menu: HF repo, file, sha256, size, license, which tiers it fits
 linux/                   Linux image build  → .github/workflows/linux-image.yml
 windows/                 Windows image build → .github/workflows/windows-image.yml
-provision/               add checked models to a laptop or a disk image at imaging time
+provision/               put catalog models onto a Zero disk or disk image (used by the golden builds)
+golden/                  golden images: base image + every model of the tier, verified, to S3
 ```

@@ -53,7 +53,8 @@ This repo contains Microsoft's Windows installer. It is only for imaging license
   Disk selection stays interactive (see *Unattended disk layout*).
 - `install.wim` split into `install.swm` parts < 4 GB, so the USB stick can be FAT32.
 
-Models are **not** in the ISO (see *Models*).
+The ISO has no models. Laptops ship the tier's **golden image** instead, built from this ISO with
+every model of the tier inside (see *Models*).
 
 ## Make the USB stick
 
@@ -87,17 +88,33 @@ Experience" customization: the ISO's own `autounattend.xml` already does that jo
 3. OOBE: region/keyboard, then the owner names the local account. No network, no Microsoft account.
 4. At sign-in Zero opens (Edge app window on `http://127.0.0.1:7860`). With no model on the disk
    the chat runs memory-only and the model service just waits for one.
-5. Add the models (next section) before the laptop leaves the station.
+5. A laptop installed from the ISO has no models: put them back with
+   `provision\windows-add-models.ps1 -All <tier>` (next section). Shipped laptops get the golden image
+   instead, which already has them.
 
 ## Models
 
-Models are 10–100 GB each and are not baked into the image. The imaging station downloads them from
-Hugging Face, checks every sha256 against [`models/catalog.json`](../models/catalog.json) and copies
-them onto the laptop. **Every model that fits a tier is preloaded.**
+Shipped laptops get the **golden image** of their tier (`golden/`, see the top-level README): Windows
+11 Pro installed from this ISO in a VM (the same specialize pass installs the Zero stack), every
+catalog model of the tier written into `C:\ProgramData\leCore+\models\`, the tier default in
+`model.txt`, then generalized with `sysprep /generalize /oobe`. It is one raw disk image per tier
+(`zero-pro-windows`, `zero-max-windows` from the HP ISO, `zero-ultra-windows` from the Lenovo ISO)
+that the imaging team writes onto the NVMe. **Every model that fits a tier ships**; nothing is
+downloaded on the laptop. On its first boot each laptop specializes (new SID, its drivers, a fresh
+API key), the `\Zero\Zero golden first boot` task grows C: to the end of the disk, resets the model
+files' ACLs and installs the Windows key from the laptop's firmware, and OOBE asks the owner for a
+local account. How to write it and how it was verified: `golden/README.md`.
+
+Model files sit flat in `C:\ProgramData\leCore+\models\`; `model.txt` holds one file name (the first
+part of a split GGUF; llama-server loads the other parts from the same folder); `models.json` is the
+inventory. To change the served model: edit `model.txt`, then `Restart-Service lecore-llama`.
+
+For service work (a laptop reinstalled from the ISO, a different default), `provision\windows-add-models.ps1`
+writes the same files from Hugging Face, checking every sha256 against
+[`models/catalog.json`](../models/catalog.json):
 
 ```powershell
-# On the imaging station (has internet). W: = the laptop's Windows volume attached to the station,
-# or C: when running on the laptop itself while it is still on the imaging network.
+# W: = the laptop's Windows volume attached to this machine, or C: on the laptop itself (needs internet)
 .\provision\windows-add-models.ps1 -All pro   -Target W: -Cache D:\zero-model-cache   # ~174 GB
 .\provision\windows-add-models.ps1 -All max   -Target W: -Cache D:\zero-model-cache   # ~798 GB
 .\provision\windows-add-models.ps1 -All ultra -Target W: -Cache D:\zero-model-cache   # ~719 GB
@@ -107,18 +124,8 @@ them onto the laptop. **Every model that fits a tier is preloaded.**
   whose `default_for` includes the tier (override with `-Default <id>`).
 - `-Models id1,id2 -Tier <tier>` installs only those (model.txt = `-Default`, else the tier default
   if present, else the first id).
-- Files land flat in `C:\ProgramData\leCore+\models\`; `model.txt` holds one file name (the first part
-  of a split GGUF; llama-server loads the other parts from the same folder). An inventory is written to
-  `C:\ProgramData\leCore+\models.json`.
-- `-Cache` keeps verified downloads on the station so the next laptop is a copy (each copy is
-  re-hashed unless `-SkipCopyVerify`). `-DryRun` prints the plan and sizes.
-
-**Golden-image flow (recommended):** install one laptop per image from the USB stick, run
-`windows-add-models.ps1 -All <tier>` once onto it, then capture that disk with your imaging tool
-and clone it to the other laptops of the same tier (a Pro golden image and a Max golden image from the
-HP ISO, an Ultra golden image from the Lenovo ISO). Run one load test per model on the golden image
-before shipping (edit `model.txt`, `Restart-Service lecore-llama`, then
-`Invoke-RestMethod http://127.0.0.1:8080/v1/models`).
+- `-Cache` keeps verified downloads so the next run is a copy (each copy is re-hashed unless
+  `-SkipCopyVerify`). `-DryRun` prints the plan and sizes.
 
 ## What runs on the laptop
 
@@ -162,7 +169,7 @@ again in the specialize pass; the firewall part re-asserted at every boot by the
 | Edge (the Zero window) | Off: Microsoft Editor cloud proofing + synonyms, text prediction, Copilot page context. Everything else in Edge is untouched | These send what you type, or what the page shows, to Microsoft. Windows' local spell check still works. |
 | Privacy toggles | The OOBE privacy page, all off: location, Find my device, diagnostic data Required only (`AllowTelemetry 0`; Pro's floor is "Required"), inking & typing, online speech recognition, tailored experiences, advertising ID | Original image requirement. |
 
-Provisioning and model downloads use the network on the imaging station (`windows-add-models.ps1`).
+The models are on the disk when the laptop ships (golden image); nothing has to be downloaded for them.
 
 leCore features that need the network, and therefore **do not work** while contained (the chat says
 it could not reach the address): the chat commands `learn api: <URL>` / `use api: service.endpoint`

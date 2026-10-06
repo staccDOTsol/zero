@@ -1,47 +1,47 @@
-# Writing the Zero Linux image to a laptop
+# Writing the Zero Linux golden image to a laptop
 
-The image is one raw GPT disk (`zero-<tag>.img`): a 512 MiB EFI system partition and an ext4 root
-partition, 16 GiB in total. On its first boot the root partition grows to fill the laptop's NVMe.
-It holds no models and no user account. The owner creates the account on first boot.
+A laptop gets one file: the **golden image** of its tier, `zero-<tier>-linux.img.zst`. It is a raw GPT
+disk (a 512 MiB EFI system partition and an ext4 root partition) that already holds the Zero stack and
+**every catalog model of the tier**, with the tier's default model selected. Write it onto the
+laptop's NVMe and the laptop works the moment it is turned on: nothing is downloaded on the laptop,
+nothing is added by hand.
 
-Never boot a unit at the factory unless it is going to be re-flashed. The first boot creates the
-owner account, the machine id, and the grown root partition. You cannot undo that.
+| Golden image | Laptop | Models | Image size (raw, about) | Minimum NVMe |
+|---|---|---|---|---|
+| `zero-pro-linux.img.zst` | HP ZBook Ultra G1a, 64 GB | 8 (≈ 174 GB), default Qwen3.8 27B UD-Q4_K_XL | ≈ 193 GB | 256 GB (ships on 1 TB) |
+| `zero-max-linux.img.zst` | HP ZBook Ultra G1a, 128 GB | 15 (≈ 798 GB), default Qwen3.8 27B Q8_0 | ≈ 817 GB | 1 TB (ships on 2 TB) |
+| `zero-ultra-linux.img.zst` | Lenovo ThinkPad P16 Gen 3, 128 GB | 15 (≈ 719 GB), default Qwen3.8 27B UD-Q4_K_XL | ≈ 738 GB | 1 TB (ships on 2 TB) |
 
-## 1. Get the release and check it
+The exact byte sizes and sha256 values are in each image's manifest (`zero-<tier>-linux.manifest.json`).
+The image is only as large as its contents; on the first boot the root partition grows to fill the
+NVMe, so the owner gets the rest of the drive. The image holds no user account: GNOME's setup
+assistant creates the owner's account on the first boot.
 
-Each release `linux-YYYYMMDD-<sha>` in `staccDOTsol/lecore-plus` has these assets:
+**Never boot a unit at the factory unless it is going to be re-flashed.** The first boot creates the
+owner account, the machine id, the per-machine llama-server API key and the grown root partition. You
+cannot undo that.
 
-| Asset | What it is |
-|---|---|
-| `zero-<tag>.img.zst.part00`, `part01`, … | the zstd-compressed image, split into parts of at most 1.9 GiB |
-| `SHA256SUMS` | sha256 of every part, of the joined `.img.zst`, and of the raw `.img` |
-| `BUILDINFO.txt`, `packages.txt` | pinned versions and the full package list |
-| `smoke-report.txt`, `smoke-first-boot-screen.png` | the CI boot test of this exact image |
+## 1. Get the image and check it
 
-```sh
-gh release download linux-YYYYMMDD-<sha> -R staccDOTsol/lecore-plus -D zero && cd zero
-sha256sum -c --ignore-missing SHA256SUMS          # checks the parts
-```
-
-GitHub limits a release asset to 2 GiB, so the image comes in parts. The parts also fit a FAT32 stick,
-which has a 4 GiB file limit.
-
-## 2. Reassemble
-
-To get an image file (needs 16 GiB free):
+The golden images are in the private S3 bucket of the Zero team, under `linux/<base release>/`, next
+to their manifests and verification reports (see `golden/README.md`). The Zero team sends a download
+link (an S3 presigned URL) per file.
 
 ```sh
-cat zero-<tag>.img.zst.part* | zstd -d --long=27 -o zero-<tag>.img
-sha256sum -c --ignore-missing SHA256SUMS          # now also checks zero-<tag>.img
+curl -fLo zero-max-linux.img.zst '<presigned URL of the image>'
+curl -fLo zero-max-linux.manifest.json '<presigned URL of the manifest>'
+python3 -c 'import json; m=json.load(open("zero-max-linux.manifest.json")); print(m["zst_sha256"], " zero-max-linux.img.zst")' | sha256sum -c -
+python3 -m json.tool zero-max-linux.manifest.json | grep -E '"(raw_bytes|raw_sha256|verification)"'
 ```
 
-You can also stream it straight to a disk without writing a file (step 3). `--long=27` is optional with
-current zstd, since 128 MiB is the default decode window. It does no harm.
+`verification` must be `PASS`. The manifest also lists every model, the base release and the catalog
+version the image was built from.
 
-## 3. Write it to a laptop's NVMe from a USB live stick
+## 2. Write it to a laptop's NVMe from a USB live stick
 
 1. Make a live USB from any current Linux (Debian 13 or Ubuntu 24.04 "Try" mode both work and both
-   boot with Secure Boot on). Copy the parts and `SHA256SUMS` onto the stick or onto a second stick.
+   boot with Secure Boot on). Put the `.img.zst` and its manifest on a second stick or a network share
+   (a Max image is about 800 GB: use an external SSD or an NFS/SMB share).
 2. Boot the laptop from USB. On the HP ZBook Ultra G1a press **F9** at power-on. On the Lenovo
    ThinkPad P16 Gen 3 press **F12**.
 3. Find the internal disk. It is the NVMe, not the USB stick:
@@ -49,113 +49,74 @@ current zstd, since 128 MiB is the default decode window. It does no harm.
    lsblk -d -o NAME,SIZE,MODEL,TRAN
    ```
    Below, the disk is `/dev/nvme0n1`. If the P16 has two NVMe drives, pick the one you boot from.
-4. Discard the old contents (fast; it also TRIMs the SSD), then write and check:
+4. Discard the old contents (fast; it also TRIMs the SSD), write, and check:
    ```sh
    sudo blkdiscard -f /dev/nvme0n1
-   cat zero-<tag>.img.zst.part* | zstd -dc --long=27 | \
+   zstd -dc zero-max-linux.img.zst | \
      sudo dd of=/dev/nvme0n1 bs=16M iflag=fullblock oflag=direct conv=fsync status=progress
-   # read back exactly the image's size and compare with the .img line of SHA256SUMS
-   sudo head -c "$(stat -c %s zero-<tag>.img 2>/dev/null || echo 17179869184)" /dev/nvme0n1 | sha256sum
+   # read back exactly raw_bytes and compare with raw_sha256 from the manifest
+   RAW=$(python3 -c 'import json; print(json.load(open("zero-max-linux.manifest.json"))["raw_bytes"])')
+   sudo head -c "$RAW" /dev/nvme0n1 | sha256sum
    sudo sgdisk -e /dev/nvme0n1     # move the backup GPT header to the real end of the disk
    ```
-5. Optional, before the first boot: add models (section 5). Then power off and remove the stick.
+   `sgdisk -e` is optional (the first boot fixes the GPT when it grows the root partition), but it
+   keeps tools that look at the disk before the first boot happy.
+5. Power off and remove the stick.
 
 Firmware settings: UEFI boot (the default on both models). Secure Boot can stay **on** for Zero
 Pro/Max. On Zero Ultra it must be **off**, or the NVIDIA driver must be enrolled once. See
 "Secure Boot" in `linux/README.md`. The image boots through the removable-media path
 `\EFI\BOOT\BOOTX64.EFI` and writes no firmware boot entries.
 
-## 4. Clonezilla
+## 3. Clonezilla and disk duplicators
 
-Clonezilla restores its own image format, not raw `.img` files. There are two ways to use it:
+- **Clonezilla Live as the boot stick.** Choose *Enter command line prompt* and run the pipeline of
+  step 2. Clonezilla Live includes `zstd`, `dd`, `blkdiscard` and `sgdisk`.
+- **Clonezilla as the duplicator.** Write the golden image to one disk as in step 2 *without booting
+  it*, then Clonezilla → `device-image` → `savedisk`. Partclone copies only the used blocks of the
+  ext4 and vfat partitions. Restore with `restoredisk` per laptop, or multicast a bench with
+  Clonezilla SE (DRBL). Restoring to a larger NVMe is fine: the root partition grows on the first boot.
+- **Hardware NVMe duplicators** take a raw image: decompress it once
+  (`zstd -d zero-max-linux.img.zst`, needs `raw_bytes` of free space), check it against `raw_sha256`,
+  and copy that `.img` sector by sector. A duplicator that copies only used blocks is fine too
+  (ext4 + vfat).
 
-- **Clonezilla as the live stick.** Boot Clonezilla Live, choose *Enter command line prompt*, and run
-  the `dd` pipeline from step 3. Clonezilla Live includes `zstd`, `dd`, `blkdiscard` and `sgdisk`.
-- **Clonezilla as the duplicator.** This is best for many machines and for images with models. Write
-  Zero (and the models, section 5) to one *golden* disk without booting it. Then boot Clonezilla →
-  `device-image` → `savedisk` to save it. Partclone copies only the used blocks of the ext4 and vfat
-  partitions, so a golden Max disk saves about 800 GB of models, not the whole NVMe. Restore with
-  `restoredisk` per laptop, or use Clonezilla SE (DRBL) to multicast to a whole bench. Restoring to a
-  larger NVMe is fine: Zero grows its root partition on the first boot.
+## 4. What was checked before the image was released
 
-## 5. Models (imaging station)
+The golden build (`golden/`, see `golden/README.md`) refuses to publish an image as verified unless:
 
-Models are not in the image. `provision/linux-add-models.sh` downloads them on the **imaging
-station**, checks every file's size and sha256 against `models/catalog.json`, and copies them into
-`/var/lib/lecore-plus/models/`. It then writes `zero-models.json` (the manifest) and
-`/etc/lecore-plus/model` (the default). The laptop never downloads anything.
+- every model file of the tier is read back from the finished image and its size and sha256 match
+  `models/catalog.json`;
+- the image, booted for its first boot in QEMU/KVM with OVMF on a drive the size of the laptop's NVMe
+  (Secure Boot on for Pro/Max, off for Ultra), grows its root to the drive, has no user baked in,
+  makes its own API key, starts `lecore-llama` on the tier's default model by itself, the default
+  model answers on `127.0.0.1:8080` (with the key; without it, 401), the chat on `127.0.0.1:7860`
+  answers through the model, and both services stay confined to loopback while the OS reaches the
+  internet.
 
-Every model that fits a tier is preloaded on that tier. Catalog totals on 2026-10-05:
+The VM has no GPU, so in that test the model runs on the CPU. That the Vulkan GPU path works on the
+real laptops is checked on the first laptop of each model (`journalctl -u lecore-llama` names the
+Vulkan device).
 
-| Tier | Models | Download / disk | Minimum NVMe |
-|---|---|---|---|
-| Zero Pro | 8 | ≈ 174 GB | 512 GB (1 TB recommended) |
-| Zero Max | 15 | ≈ 798 GB | 1 TB (2 TB recommended) |
-| Zero Ultra | 15 | ≈ 719 GB | 1 TB (2 TB recommended) |
+## 5. Base images, and changing models on one laptop
 
-Station requirements: Linux with `bash`, `python3`, `curl`, `sha256sum`, and for disks and images also
-`losetup`, `sgdisk` (gdisk), `growpart` (cloud-guest-utils) and `resize2fs`/`e2fsck`.
-It also needs about 1 TB for the download cache. Some repos are gated (for example Google's Gemma QAT
-GGUFs). Accept their license on huggingface.co once and export `HF_TOKEN`. The token goes only to
-huggingface.co and never into the image.
+The GitHub release `linux-YYYYMMDD-<sha>` (and its public mirror) holds the **base** image: the same
+system with no models, 16 GiB. It is the input of the golden build, not something to ship: a laptop
+flashed with only the base image has no model. Its parts are `zero-<tag>.img.zst.part00…` plus
+`SHA256SUMS` (`cat` the parts, then `zstd -d`).
 
-### Per tier, once per release: the golden image
+On a shipped laptop the owner switches the served model with `zero-model list` and
+`sudo zero-model use <id>`. Service work that must put a model back (or a different default) onto a
+disk uses `provision/linux-add-models.sh` (`--target <mounted root>` or `--image <file>`; `--help`).
 
-```sh
-# 1. fetch and verify everything for the tier (resumable; cached files are reused)
-provision/linux-add-models.sh --all max --download-only --cache /srv/zero-models
+## 6. How a factory imaging service takes this
 
-# 2. make the tier's golden image: the image file grows to fit, gets every Max model, and
-#    /etc/lecore-plus/model = the catalog's default for max (override with --default <id>)
-cat zero-<tag>.img.zst.part* | zstd -dc --long=27 > zero-max-<tag>.img
-sudo provision/linux-add-models.sh --all max --image zero-max-<tag>.img --cache /srv/zero-models
-
-# 3. write the golden image to each Max laptop (as in step 3, or with Clonezilla / a duplicator)
-sudo dd if=zero-max-<tag>.img of=/dev/nvme0n1 bs=16M oflag=direct conv=fsync status=progress
-sudo sgdisk -e /dev/nvme0n1
-```
-
-The golden image file is sparse. It takes about 820 GB on disk for Max. Run the same steps with
-`--all pro` and `--all ultra` for the other tiers. Do the load test the model README asks for (one
-per model) on a sample unit of each tier, then re-flash that unit. Use `sudo zero-model use <id>`
-to switch models, and `journalctl -u lecore-llama` to see whether a model loaded.
-
-### Directly onto a laptop disk (no golden file)
-
-Write the base image (step 3). Then mount the root partition from the live stick or the imaging
-station and fill it. `--grow` first grows the partition and file system to fill the NVMe:
-
-```sh
-sudo mount /dev/nvme0n1p2 /mnt/zero
-sudo provision/linux-add-models.sh --all ultra --target /mnt/zero --grow --cache /srv/zero-models
-sudo umount /mnt/zero
-```
-
-### Per-order selections
-
-If an order lists specific models instead of the whole tier, pass ids. The first id becomes the
-default unless you pass `--default`:
-
-```sh
-sudo provision/linux-add-models.sh --tier pro --target /mnt/zero --grow qwen3.8-27b gpt-oss-20b
-```
-
-Other options: `--dry-run` prints the plan, `--reserve-gb N` sets how much free space stays for the
-owner (default 2 GiB), and `--no-verify-target` skips re-hashing the copies.
-
-## 6. How a factory imaging service would take this
-
-The usual inputs are one image per SKU plus a written procedure. For Zero that means:
-
-1. **Golden image per tier.** For each tier, the base release image plus `--all <tier>` models,
-   made on the imaging station as in section 5. Hand over the `.img` file, or a Clonezilla
-   `savedisk` image of a golden disk, with its sha256.
-2. **Duplication.** NVMe duplicators (or Clonezilla SE multicast) write the golden image to the
-   laptops' drives. If the duplicator copies sector by sector, the copy is exact. If it copies used
-   blocks only, that is fine too, because the file systems are ext4 and vfat.
-3. **BIOS settings.** UEFI boot. Secure Boot on for Pro/Max. For Ultra, Secure Boot off, or on with
+1. **One golden image per tier**: `zero-pro-linux`, `zero-max-linux`, `zero-ultra-linux`, each with
+   its manifest (sha256, size, model list). Pro and Max go on the HP ZBook Ultra G1a (64 GB / 128 GB
+   RAM), Ultra on the Lenovo ThinkPad P16 Gen 3.
+2. **Duplication**: `zstd -dc | dd` from a live stick, Clonezilla, or a duplicator (section 3).
+3. **BIOS settings**: UEFI boot. Secure Boot on for Pro/Max. For Ultra, Secure Boot off, or on with
    the NVIDIA MOK enrollment done by the owner (see the README).
-4. **No boot before shipping.** The first boot is the owner's: gnome-initial-setup creates the
-   account and the root file system grows to fill the disk.
-5. **Per release.** Build a new golden image when the image or `models/catalog.json` changes.
-   Re-run `--download-only` first. It re-verifies the cache and fetches only what changed.
+4. **No boot before shipping**: the first boot is the owner's.
+5. **Per release**: the Zero team rebuilds the golden images when the base image or
+   `models/catalog.json` changes (`golden/build-golden.sh`) and sends new manifests.
