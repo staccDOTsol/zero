@@ -38,11 +38,26 @@
     "repo": "https://github.com/nltk/nltk_data",
     "commit": "550b6625bcef1f2abff2ff770a5a0d272c9c6b2a",
     "packages": [
-      { "path": "corpora/gutenberg.zip",   "sha256": "2d3c3ab548c653944310f37f536443ec85d0a0ad855fcae217a0c9efdce2d611" },
-      { "path": "corpora/udhr.zip",        "sha256": "97e4c9dfa4a402f243d60b03d511afb04cf63f92f9ad1be9108b511448c329fa" },
-      { "path": "corpora/brown.zip",       "sha256": "9b275f9b3b95d7bd66ccfb7cd259f445a13bbe5d1f4107aba09fd3e8364bafa6" },
-      { "path": "corpora/reuters.zip",     "sha256": "9a59a43823f02a6e2777075c989a3dc454e4b6f68e0332ee3c0e8264075b62f5" },
-      { "path": "tokenizers/punkt_tab.zip", "sha256": "e57f64187974277726a3417ca6f181ec5403676c717672eef6a748a7b20e0106" }
+      {
+        "path": "corpora/gutenberg.zip",
+        "sha256": "2d3c3ab548c653944310f37f536443ec85d0a0ad855fcae217a0c9efdce2d611"
+      },
+      {
+        "path": "corpora/udhr.zip",
+        "sha256": "97e4c9dfa4a402f243d60b03d511afb04cf63f92f9ad1be9108b511448c329fa"
+      },
+      {
+        "path": "corpora/brown.zip",
+        "sha256": "9b275f9b3b95d7bd66ccfb7cd259f445a13bbe5d1f4107aba09fd3e8364bafa6"
+      },
+      {
+        "path": "corpora/reuters.zip",
+        "sha256": "9a59a43823f02a6e2777075c989a3dc454e4b6f68e0332ee3c0e8264075b62f5"
+      },
+      {
+        "path": "tokenizers/punkt_tab.zip",
+        "sha256": "e57f64187974277726a3417ca6f181ec5403676c717672eef6a748a7b20e0106"
+      }
     ]
   },
   "fido": {
@@ -63,5 +78,23 @@
     "path": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
     "bytes": 105454432,
     "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d"
+  },
+  "ci_vulkan": {
+    "comment": "CI smoke test only, never shipped: a software Vulkan device so the shipped llama.cpp Vulkan build is exercised on the runner (which has no GPU). On the laptops the AMD/NVIDIA drivers provide the Vulkan loader and ICD.",
+    "loader": {
+      "name": "Khronos Vulkan loader (LunarG Vulkan Runtime 1.4.363.0 components)",
+      "url": "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/vulkan-runtime-components.zip",
+      "sha256": "a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a",
+      "dll": "VulkanRT-X64-1.4.363.0-Components/x64/vulkan-1.dll"
+    },
+    "icd": {
+      "name": "Mesa 26.2.4 lavapipe (llvmpipe Vulkan), mesa-dist-win MSVC build",
+      "url": "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z",
+      "sha256": "351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695",
+      "files": [
+        "x64/vulkan_lvp.dll",
+        "x64/lvp_icd.x86_64.json"
+      ]
+    }
   }
 }

@@ -132,6 +132,37 @@ try {
     Check 'llama-server /v1/chat/completions answers' ([bool]$cc.choices[0].message.content) ("{0}" -f $cc.choices[0].message.content)
 } catch { Check 'llama-server /v1/chat/completions answers' $false $_.Exception.Message }
 
+# 5b. the Vulkan backend on a software Vulkan device (CI only; never shipped) ----------------------
+# The runner has no GPU. Install the Khronos loader + Mesa lavapipe, restart the model service (it runs as
+# LOCAL SERVICE in session 0, like on the laptop) and check llama.cpp's Vulkan backend loads the device
+# and runs the model on it.
+try {
+    $vk = $stackJson.ci_vulkan
+    $vkDir = Join-Path $env:ProgramData 'lecore-ci-vulkan'
+    New-Item -ItemType Directory -Force -Path $vkDir | Out-Null
+    $lz = Join-Path $vkDir 'loader.zip'; $mz = Join-Path $vkDir 'mesa.7z'
+    & curl.exe --fail --location --silent --show-error --retry 3 --output $lz $vk.loader.url
+    & curl.exe --fail --location --silent --show-error --retry 3 --output $mz $vk.icd.url
+    if ((Get-FileHash $lz -Algorithm SHA256).Hash.ToLower() -ne $vk.loader.sha256) { throw 'Vulkan loader sha256 mismatch' }
+    if ((Get-FileHash $mz -Algorithm SHA256).Hash.ToLower() -ne $vk.icd.sha256) { throw 'Mesa sha256 mismatch' }
+    Expand-Archive -LiteralPath $lz -DestinationPath (Join-Path $vkDir 'loader') -Force
+    Copy-Item -Force (Join-Path (Join-Path $vkDir 'loader') ($vk.loader.dll -replace '/', '\')) (Join-Path $env:SystemRoot 'System32\vulkan-1.dll')
+    $7z = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source; if (-not $7z) { $7z = "$env:ProgramFiles\7-Zip\7z.exe" }
+    $null = Invoke-Quiet { & $7z x -y "-o$vkDir\mesa" $mz 'x64\vulkan_lvp.dll' 'x64\lvp_icd.x86_64.json' }
+    $icd = Join-Path $vkDir 'mesa\x64\lvp_icd.x86_64.json'
+    & icacls.exe $vkDir /grant '*S-1-5-19:(OI)(CI)RX' /T /C /Q | Out-Null
+    $null = Invoke-Quiet { & reg.exe add 'HKLM\SOFTWARE\Khronos\Vulkan\Drivers' /v $icd /t REG_DWORD /d 0 /f }
+    $devs = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices } | Out-String
+    Check 'llama.cpp Vulkan backend sees a Vulkan device (Mesa lavapipe, CI only)' ($devs -match 'Vulkan\d') (($devs -split "`n" | Where-Object { $_ -match 'Vulkan|llvmpipe' }) -join ' / ')
+    $mark = (Get-Content (Join-Path $logs 'lecore-llama.out.log')).Count
+    Restart-Service lecore-llama
+    $null = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
+    $cc2 = Post-Json 'http://127.0.0.1:8080/v1/chat/completions' @{ model = 'x'; max_tokens = 16; messages = @(@{ role = 'user'; content = 'Say hi.' }) } 300
+    $since = (Get-Content (Join-Path $logs 'lecore-llama.out.log') | Select-Object -Skip $mark) -join "`n"
+    $vkLines = ($since -split "`n" | Where-Object { $_ -match 'Vulkan|llvmpipe|offload' } | Select-Object -First 6) -join ' / '
+    Check 'model service runs the model on the Vulkan device (as LOCAL SERVICE)' ([bool]$cc2.choices[0].message.content -and $since -match 'Vulkan0|llvmpipe') ("answer: {0} | log: {1}" -f $cc2.choices[0].message.content, $vkLines)
+} catch { Check 'llama.cpp Vulkan backend on a software Vulkan device (CI only)' $false $_.Exception.Message }
+
 # 6. chat -> model rung ---------------------------------------------------------------------------
 # Evidence that the chat on :7860 reached the model on :8080: llama-server processes new tasks while the
 # chat answers a question its memory cannot, and the answer is not a memory/engine answer. (At the pinned
