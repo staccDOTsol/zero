@@ -29,14 +29,13 @@ Suites: $DEBIAN_SUITE-security
 Components: $DEBIAN_COMPONENTS
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
-# Packages that phone home or update themselves are never installed (also blocks them as deps).
-install -m 0644 "$B/overlay/etc/apt/preferences.d/zero-never" /etc/apt/preferences.d/zero-never
 apt-get update
 
 # ------------------------------------------------------------------------------------------------
 log "Base system"
 apt_install systemd-sysv dbus dbus-user-session udev kmod sudo locales-all tzdata keyboard-configuration \
   console-setup ca-certificates curl openssl nftables iproute2 network-manager wpasupplicant iw wireless-regdb \
+  systemd-timesyncd fwupd \
   rfkill bluez cloud-guest-utils fdisk gdisk e2fsprogs dosfstools zstd xz-utils pciutils usbutils \
   less nano bash-completion python3 python3-venv mokutil efibootmgr initramfs-tools dconf-cli \
   xdg-user-dirs xdg-utils polkitd pkexec accountsservice
@@ -54,15 +53,8 @@ apt_install firmware-sof-signed intel-microcode amd64-microcode
 log "Boot loader (shim + signed GRUB)"
 apt_install grub-efi-amd64 grub-efi-amd64-signed shim-signed
 
-log "GNOME desktop (curated from gnome-core; no Software/Maps/Weather/PackageKit)"
-apt_install gdm3 gnome-initial-setup gnome-shell gnome-session gnome-settings-daemon gnome-control-center \
-  adwaita-icon-theme baobab cups evince evolution-data-server fonts-cantarell glib-networking \
-  gnome-backgrounds gnome-bluetooth-sendto gnome-calculator gnome-characters gnome-disk-utility \
-  gnome-font-viewer gnome-keyring gnome-logs gnome-menus gnome-snapshot gnome-sushi \
-  gnome-system-monitor gnome-console gnome-text-editor gnome-user-docs gsettings-desktop-schemas \
-  gstreamer1.0-plugins-base gstreamer1.0-plugins-good gvfs-backends gvfs-fuse libatk-adaptor \
-  libcanberra-pulse libglib2.0-bin libpam-gnome-keyring loupe nautilus orca pipewire-audio \
-  simple-scan system-config-printer-common system-config-printer-udev tecla totem yelp zenity \
+log "GNOME desktop (Debian gnome-core + first-boot setup)"
+apt_install gnome-core gdm3 gnome-initial-setup network-manager-gnome \
   xdg-desktop-portal-gnome xdg-desktop-portal-gtk xdg-user-dirs-gtk xwayland ibus \
   switcheroo-control power-profiles-daemon bolt upower iio-sensor-proxy low-memory-monitor \
   fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core \
@@ -78,7 +70,7 @@ log "NVIDIA open kernel modules $NVIDIA_DRIVER_VERSION (NVIDIA's Debian 13 repos
 dpkg -i "$B/$NVIDIA_KEYRING_DEB"
 apt-get update
 V=$NVIDIA_DRIVER_VERSION
-apt_install dkms "nvidia-open=$V" "nvidia-driver=$V" "nvidia-driver-cuda=$V" "nvidia-kernel-open-dkms=$V" \
+apt_install dkms nvidia-driver-pinning-615 "nvidia-open=$V" "nvidia-driver=$V" "nvidia-driver-cuda=$V" "nvidia-kernel-open-dkms=$V" \
   "nvidia-settings=$V" "nvidia-xconfig=$V" "nvidia-vulkan-icd=$V" "firmware-nvidia-gsp=$V"
 NVKO=$(find "/lib/modules/$KVER" -name 'nvidia.ko*' | head -n1 || true)
 if [ -z "$NVKO" ]; then
@@ -114,23 +106,6 @@ echo "Intel Arrow Lake graphics:"; fwcheck i915 'mtl_|arl_' || true; fwcheck xe 
 echo "Wi-Fi:"; fwcheck iwlwifi 'gl-c0-fm|bz-b0-fm|bz-b0-gf|sc-a0' || true
 fwcheck mt7925e 'mt7925' || true; fwcheck ath12k 'WCN7850' || true
 echo "NVIDIA GSP firmware:"; ls -la /lib/firmware/nvidia/*/ 2>/dev/null | head -n 20
-
-# ------------------------------------------------------------------------------------------------
-log "Removing / refusing packages that phone home"
-UNWANTED="unattended-upgrades popularity-contest apt-listchanges reportbug avahi-daemon avahi-autoipd
-  cups-browsed gnome-software packagekit packagekit-tools flatpak snapd systemd-timesyncd ntpsec chrony
-  ntpdate modemmanager geoclue-2.0-demo fwupd gnome-online-miners rygel gnome-user-share
-  gnome-remote-desktop gnome-maps gnome-weather gnome-tour tracker-miner-fs-common"
-INST=""
-for p in $UNWANTED; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' && INST+=" $p"; done
-if [ -n "$INST" ]; then
-  echo "installed and unwanted:$INST"
-  for p in $INST; do
-    # purge only if nothing else would go with it; otherwise keep it but mask its units below
-    extra=$(apt-get -s purge "$p" | awk '/^Purg /{print $2}' | grep -vx "$p" || true)
-    if [ -z "$extra" ]; then apt-get -y purge "$p"; else echo "keeping $p (needed by: $extra); its units are masked"; fi
-  done
-fi
 
 # ------------------------------------------------------------------------------------------------
 log "leCore Python environment"
@@ -175,9 +150,21 @@ chmod 0755 /opt/lecore-plus/bin/* /usr/local/sbin/* /usr/lib/zero/* /etc/initram
 chmod 0440 /etc/sudoers.d/* 2>/dev/null || true
 
 log "Users and directories"
-getent group lecore >/dev/null || groupadd --system lecore
-id lecore >/dev/null 2>&1 || useradd --system --gid lecore --groups render,video \
-  --home-dir /var/lib/lecore-plus --no-create-home --shell /usr/sbin/nologin --comment "Zero local AI services" lecore
+# one dedicated system user per service: lecore-llama (llama-server), lecore-chat (leCore chat)
+for u in lecore-llama lecore-chat; do
+  getent group "$u" >/dev/null || groupadd --system "$u"
+  id "$u" >/dev/null 2>&1 || useradd --system --gid "$u" --home-dir /var/lib/lecore-plus --no-create-home \
+    --shell /usr/sbin/nologin --comment "Zero local AI ($u)" "$u"
+done
+usermod -a -G render,video lecore-llama
+id lecore-llama; id lecore-chat
+
+log "Per-user egress rules (nftables): lecore-llama / lecore-chat may only use loopback"
+sed -e "s/@UID_LLAMA@/$(id -u lecore-llama)/g" -e "s/@UID_CHAT@/$(id -u lecore-chat)/g" \
+  /usr/lib/zero/nftables-zero.nft.in > /etc/nftables.conf
+chmod 0755 /etc/nftables.conf
+cat /etc/nftables.conf
+nft -c -f /etc/nftables.conf && echo "nftables.conf syntax OK" || echo "WARNING: nft -c could not check the rules on this build host"
 install -d -m 0755 -o root -g root /var/lib/lecore-plus /var/lib/lecore-plus/models /etc/lecore-plus /var/lib/zero
 rm -f /etc/lecore-plus/model            # no model in the base image; provision/ writes it
 
@@ -211,21 +198,16 @@ fi
 
 log "systemd units"
 systemctl enable nftables.service lecore-llama.service lecore-llama.path lecore-chat.service \
-  zero-growroot.service zero-gpu-memory.service NetworkManager.service gdm.service
+  zero-growroot.service zero-gpu-memory.service NetworkManager.service gdm.service systemd-timesyncd.service
 systemctl set-default graphical.target
-for u in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service \
-         systemd-timesyncd.service fwupd-refresh.timer fwupd-refresh.service fwupd.service \
-         avahi-daemon.service avahi-daemon.socket cups-browsed.service geoclue.service \
-         ModemManager.service packagekit.service packagekit-offline-update.service \
-         unattended-upgrades.service motd-news.timer motd-news.service snapd.service snapd.socket \
-         systemd-firstboot.service gnome-remote-desktop.service nvidia-persistenced.service; do
+# systemd-firstboot would prompt on the console (GNOME's first-boot setup does this job);
+# nvidia-persistenced is not needed for Vulkan and would fail on the AMD laptops.
+for u in systemd-firstboot.service nvidia-persistenced.service; do
   systemctl mask "$u"
 done
-# masking nvidia-persistenced: it is not needed for Vulkan and would fail on the AMD laptops
 for u in nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service nvidia-suspend-then-hibernate.service; do
   [ -e "/usr/lib/systemd/system/$u" ] && systemctl enable "$u" || true
 done
-systemctl --global mask gnome-software-service.service 2>/dev/null || true
 
 log "dconf, icons, GRUB defaults"
 dconf update

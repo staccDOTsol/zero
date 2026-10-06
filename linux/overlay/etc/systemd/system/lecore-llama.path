@@ -1,4 +1,4 @@
-# Zero: start the model server as soon as a model is selected (e.g. after zero-models / provisioning).
+# Zero: start the model server as soon as a model is selected (e.g. after provisioning or zero-model use).
 [Unit]
 Description=Zero: start the local model server when /etc/lecore-plus/model is written
 

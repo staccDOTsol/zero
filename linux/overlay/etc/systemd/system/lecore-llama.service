@@ -5,6 +5,8 @@
 [Unit]
 Description=Zero local model server (llama.cpp, Vulkan) on 127.0.0.1:8080
 Documentation=file:///usr/share/lecore-plus/BUILDINFO.txt
+# fail closed: no model server without the per-user egress rules (second layer to IPAddressDeny=)
+Requires=nftables.service
 After=local-fs.target systemd-udev-settle.service nftables.service
 ConditionPathExists=/etc/lecore-plus/model
 ConditionDirectoryNotEmpty=/var/lib/lecore-plus/models
@@ -13,9 +15,13 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=lecore
-Group=lecore
+User=lecore-llama
+Group=lecore-llama
 SupplementaryGroups=render video
+# llama.cpp: no network downloads (--offline), no built-in web UI (it lazy-loads a decoder from a
+# CDN in the viewer's browser). Zero's UI is the leCore chat. The command line stays as specified.
+Environment=LLAMA_ARG_OFFLINE=1
+Environment=LLAMA_ARG_UI=0
 EnvironmentFile=-/etc/lecore-plus/llama.env
 # The model file named in /etc/lecore-plus/model must exist; otherwise skip cleanly (exit 1 = skip).
 ExecCondition=/opt/lecore-plus/bin/lecore-llama-launch --check
@@ -25,7 +31,7 @@ ExecStart=/opt/lecore-plus/bin/lecore-llama-launch
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=infinity
-# ---- confinement: loopback only, read-only system ----
+# ---- confinement: the model's input and output never leave the machine ----
 IPAddressAllow=localhost
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

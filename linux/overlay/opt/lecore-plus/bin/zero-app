@@ -3,7 +3,7 @@
 # every user (/etc/xdg/autostart/zero.desktop) and from the "Zero" launcher.
 URL=http://127.0.0.1:7860/
 [ "$(id -u)" -ge 1000 ] || exit 0
-case "$(id -un)" in gnome-initial-setup|Debian-gdm|lecore) exit 0 ;; esac
+case "$(id -un)" in gnome-initial-setup|Debian-gdm|lecore-llama|lecore-chat) exit 0 ;; esac
 i=0
 while [ "$i" -lt 120 ]; do                  # the chat service may still be starting right after boot
   curl -fsS -o /dev/null --max-time 2 "$URL" 2>/dev/null && break

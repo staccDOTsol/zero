@@ -1,4 +1,0 @@
-# Zero: packages that phone home or update the system on their own are never installed.
-Package: unattended-upgrades popularity-contest apt-listchanges snapd flatpak gnome-software packagekit packagekit-tools avahi-daemon avahi-autoipd cups-browsed systemd-timesyncd ntpsec chrony ntpdate modemmanager gnome-maps gnome-weather
-Pin: version *
-Pin-Priority: -1

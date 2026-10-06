@@ -3,14 +3,16 @@
 # escalates honestly, exactly as with no model attached.
 [Unit]
 Description=Zero chat (leCore chat_server) on 127.0.0.1:7860
+# fail closed: no chat without the per-user egress rules (second layer to IPAddressDeny=)
+Requires=nftables.service
 After=local-fs.target nftables.service lecore-llama.service
 StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
 Type=simple
-User=lecore
-Group=lecore
+User=lecore-chat
+Group=lecore-chat
 StateDirectory=lecore-plus/chat
 WorkingDirectory=/var/lib/lecore-plus/chat
 Environment=LECORE_LLM_URL=http://127.0.0.1:8080/v1
@@ -28,7 +30,7 @@ EnvironmentFile=-/etc/lecore-plus/chat.env
 ExecStart=/opt/lecore-plus/venv/bin/python /opt/lecore-plus/bin/lecore-chat-server
 Restart=on-failure
 RestartSec=5
-# ---- confinement: loopback only, read-only system ----
+# ---- confinement: the model's input and output never leave the machine ----
 IPAddressAllow=localhost
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

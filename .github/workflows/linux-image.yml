@@ -84,8 +84,6 @@ jobs:
           path: |
             ${{ env.OUT }}/smoke/*.log
             ${{ env.OUT }}/smoke/*.png
-            ${{ env.OUT }}/smoke/*.pcap
-            ${{ env.OUT }}/smoke/*-console.txt
             ${{ env.OUT }}/smoke/smoke-report.txt
             ${{ env.OUT }}/BUILDINFO.txt
             ${{ env.OUT }}/packages.txt

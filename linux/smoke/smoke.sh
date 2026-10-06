@@ -22,12 +22,14 @@ chat() { curl -sS --max-time 900 -H 'Content-Type: application/json' -d "$(pytho
 
 hdr "ZERO SMOKE TEST ($MODE)"
 echo "ZERO_SMOKE_STARTED $MODE"
-# host clock time at which the kernel started (wall clock minus uptime; QEMU's RTC follows the host)
-echo "ZERO_SMOKE_KERNEL_START $(awk -v now="$(date +%s.%N)" '{printf "%.3f", now - $1}' /proc/uptime)"
 grep PRETTY_NAME /etc/os-release; uname -a
 cat /usr/share/lecore-plus/versions.txt 2>/dev/null
 echo "secure boot: $(mokutil --sb-state 2>&1 | tr '\n' ' ')"
 echo "lockdown:    $(cat /sys/kernel/security/lockdown 2>/dev/null)"
+if [ "$MODE" = sb ]; then
+  mokutil --sb-state 2>&1 | grep -q 'SecureBoot enabled' && grep -q '\[integrity\]' /sys/kernel/security/lockdown \
+    && ok "booted with Secure Boot enforced (shim -> GRUB -> kernel), kernel lockdown=integrity" || bad "Secure Boot not enforced"
+fi
 echo "boot state:  $(systemctl is-system-running 2>&1) (this test is itself part of the boot transaction)"
 systemctl list-jobs --no-pager | head -n 15
 systemctl --no-pager --failed
@@ -64,38 +66,39 @@ unmkinitramfs "/boot/initrd.img-$(uname -r)" /tmp/initrd 2>/dev/null && \
     awk '/00-zero-gpu-memory/{z=NR} /init-top\/udev/{u=NR} END{exit !(z && u && z<u)}' "$O" \
       && ok "initramfs runs the TTM sizing before udev" || bad "initramfs script order wrong"; }
 
-hdr "zero egress: firewall"
+hdr "zero egress: per-service confinement (rules)"
 nft list ruleset
-nft list chain inet zero_egress output 2>/dev/null | grep -q 'policy drop' && ok "nftables output policy drop is loaded" || bad "output policy drop missing"
+UL=$(id -u lecore-llama); UC=$(id -u lecore-chat); echo "lecore-llama uid $UL, lecore-chat uid $UC"
+nft list chain inet zero_egress output > /tmp/zero-chain 2>&1
+grep -q 'policy accept' /tmp/zero-chain && grep -q "meta skuid $UL oifname != \"lo\" counter .*drop" /tmp/zero-chain \
+  && grep -q "meta skuid $UC oifname != \"lo\" counter .*drop" /tmp/zero-chain \
+  && ok "nftables: output policy accept; non-loopback output dropped for lecore-llama and lecore-chat" || bad "per-user nftables rules missing"
 systemctl is-active -q nftables.service && ok "nftables.service active" || bad "nftables.service not active"
+for u in lecore-llama lecore-chat; do
+  P=$(systemctl show "$u.service" -p User -p IPAddressDeny -p IPAddressAllow -p RestrictAddressFamilies -p Requires | tr '\n' ' ')
+  echo "$u.service: $P"
+  echo "$P" | grep -q "User=$u" && echo "$P" | grep -q 'IPAddressDeny=0.0.0.0/0 ::/0' \
+    && echo "$P" | grep -q 'IPAddressAllow=127.0.0.0/8 ::1/128' && echo "$P" | grep -q 'Requires=.*nftables.service' \
+    && ok "$u.service: dedicated user, IPAddressDeny=any, IPAddressAllow=localhost, requires the nftables rules" \
+    || bad "$u.service confinement properties: $P"
+done
 echo "--- listening sockets"
-if command -v ss >/dev/null; then
-  ss -H -tulnp
-  NONLO=$(ss -H -tuln | awk '{print $5}' | grep -vE '^(127\.[0-9.]+|\[::1\]|::1|\[::ffff:127\.[0-9.]+\]):' || true)
-  [ -z "$NONLO" ] && ok "no TCP/UDP listener outside loopback" || bad "listeners outside loopback: $NONLO"
-else
-  bad "ss (iproute2) missing; cannot check listeners"
-fi
-NMRAF=$(systemctl show -p RestrictAddressFamilies --value NetworkManager.service)
-echo "NetworkManager RestrictAddressFamilies: $NMRAF"
-echo "$NMRAF" | grep -q AF_PACKET && ok "NetworkManager denied packet sockets (no DHCP; raw frames bypass nftables)" || bad "NetworkManager may use packet sockets"
-echo "--- phone-home services"
-BADU=""
-for u in apt-daily.timer apt-daily-upgrade.timer systemd-timesyncd.service fwupd-refresh.timer avahi-daemon.service \
-         cups-browsed.service geoclue.service ModemManager.service packagekit.service unattended-upgrades.service \
-         motd-news.timer snapd.service; do
-  st=$(systemctl is-enabled "$u" 2>&1 | head -n1); act=$(systemctl is-active "$u" 2>&1 | head -n1)
-  printf '  %-30s enabled=%-10s active=%s\n' "$u" "$st" "$act"
-  [ "$act" = active ] && BADU="$BADU $u"
-  [ "$st" = enabled ] && BADU="$BADU $u(enabled)"
+ss -H -tulnp
+NONLO=$(ss -H -tlnp | grep -E 'llama-server|python' | awk '{print $4}' | grep -vE '^(127\.0\.0\.1|\[::1\]):' || true)
+[ -z "$NONLO" ] && ok "llama-server / leCore listen on 127.0.0.1 only" || bad "Zero services listen outside loopback: $NONLO"
+
+hdr "normal OS networking"
+IF=$(ip -o link show | awk -F': ' '$2!="lo"{print $2; exit}')
+for i in $(seq 1 60); do ip -4 -o addr show dev "$IF" | grep -q inet && break; sleep 1; done
+ip -br addr; ip route | head -n 3
+ip -4 -o addr show dev "$IF" | grep -q inet && ok "NetworkManager configured $IF by DHCP" || bad "no DHCP address on $IF"
+getent hosts deb.debian.org >/dev/null && ok "DNS works for the system" || bad "DNS resolution failed"
+for u in systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer NetworkManager.service; do
+  printf '  %-28s enabled=%-8s active=%s\n' "$u" "$(systemctl is-enabled "$u" 2>&1)" "$(systemctl is-active "$u" 2>&1)"
 done
-[ -z "$BADU" ] && ok "no phone-home service enabled or running" || bad "running: $BADU"
-for p in unattended-upgrades popularity-contest snapd gnome-software packagekit flatpak avahi-daemon cups-browsed systemd-timesyncd; do
-  dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' && BADP="${BADP:-} $p"
-done
-[ -z "${BADP:-}" ] && ok "phone-home packages not installed" || bad "installed: $BADP"
-systemctl list-timers --all --no-pager | head -n 20
-grep -h enabled /etc/NetworkManager/conf.d/*.conf
+systemctl is-enabled -q systemd-timesyncd.service && systemctl is-enabled -q apt-daily.timer \
+  && ok "time sync and apt update timers enabled (normal Debian behaviour)" || bad "timesyncd/apt timers not enabled"
+timedatectl show -p NTP -p NTPSynchronized | tr '\n' ' '; echo
 test -f /etc/chromium/policies/managed/zero.json && python3 -m json.tool /etc/chromium/policies/managed/zero.json >/dev/null \
   && ok "chromium enterprise policy installed" || bad "chromium policy missing"
 chromium --version 2>/dev/null || true
@@ -126,64 +129,6 @@ if [ "$MODE" = full ]; then
   echo "$R" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null && ok "unknown question handled memory-only (no error)" || bad "unknown question errored"
 fi
 journalctl -b -u lecore-chat --no-pager -o cat | grep -iE 'traceback|error|read-only' | head -n 20
-
-hdr "egress is blocked; loopback works"
-IF=$(ip -o link show | awk -F': ' '$2!="lo"{print $2; exit}')
-echo "--- NIC $IF as NetworkManager left it (DHCP must not have happened):"
-ip -4 -br addr show dev "$IF"
-nmcli -t -f GENERAL.STATE,IP4.ADDRESS device show "$IF" 2>/dev/null
-if ip -4 -o addr show dev "$IF" | grep -q inet; then bad "NIC got an IPv4 address on its own (DHCP leaked)"; else ok "no IPv4 address acquired (no DHCP)"; fi
-journalctl -b -u NetworkManager --no-pager -o cat | grep -iE 'dhcp|AF_PACKET|address family' | tail -n 6
-nmcli device set "$IF" managed no 2>/dev/null || true
-ip link set "$IF" up; ip addr flush dev "$IF"; ip addr add 10.0.2.15/24 dev "$IF"; ip route replace default via 10.0.2.2
-ip -br addr
-echo "--- static address set by hand; zero-egress rules loaded:"
-OUT=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 -> $OUT"
-case "$OUT" in 2*|3*|4*) bad "outbound HTTP succeeded with the firewall on" ;; *) BLOCKED=1 ;; esac
-OUT2=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://10.0.2.2/ 2>&1); echo "curl http://10.0.2.2 (gateway) -> $OUT2"
-getent ahosts example.com >/dev/null 2>&1 && bad "DNS resolution worked" || echo "DNS: no resolution (expected)"
-curl -fsS -m 5 -o /dev/null http://127.0.0.1:7860/ && ok "loopback works with the firewall on" || bad "loopback blocked"
-zero-egress status
-TX=$(cat "/sys/class/net/$IF/statistics/tx_packets"); echo "NIC $IF tx_packets since boot: $TX"
-[ "$TX" = 0 ] && ok "the OS sent 0 frames on its network card since boot (kernel NIC counter)" || bad "the OS sent $TX frames on $IF"
-# The host copies the wire capture of the VM's NIC now: everything up to here ran with zero egress.
-echo "ZERO_SMOKE_PCAP_CHECKPOINT"
-sleep 15
-if [ "$MODE" = full ]; then
-  echo "--- control: firewall removed for one request to prove the path exists"
-  nft delete table inet zero_egress
-  OUT3=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall off) -> $OUT3"
-  nft -f /etc/nftables.conf
-  OUT4=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "curl http://1.1.1.1 (firewall restored) -> $OUT4"
-  case "$OUT3" in
-    2*|3*|4*) [ "${BLOCKED:-0}" = 1 ] && case "$OUT4" in 2*|3*|4*) bad "egress open after restore" ;; *) ok "egress blocked by the firewall (control without it reached 1.1.1.1: HTTP $OUT3)" ;; esac ;;
-    *) warn "control failed (no internet from the CI VM?); blocked result inconclusive: $OUT / $OUT3" ;;
-  esac
-  nft list chain inet zero_egress output | grep counter
-  ip addr flush dev "$IF"; nmcli device set "$IF" managed yes 2>/dev/null || true
-
-  echo "--- owner flow: sudo zero-egress open / close"
-  zero-egress open
-  zero-egress status
-  OK5=""; for i in $(seq 1 30); do
-    OUT5=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1)
-    case "$OUT5" in 2*|3*|4*) OK5=1; break ;; esac; sleep 2
-  done
-  echo "after zero-egress open: curl http://1.1.1.1 -> $OUT5; $(ip -4 -br addr show dev "$IF")"
-  zero-egress close
-  zero-egress status
-  sleep 3
-  OUT6=$(curl -sS -m 8 -o /dev/null -w '%{http_code}' http://1.1.1.1/ 2>&1); echo "after zero-egress close: curl http://1.1.1.1 -> $OUT6"
-  NMRAF=$(systemctl show -p RestrictAddressFamilies --value NetworkManager.service)
-  if [ -n "$OK5" ] && case "$OUT6" in 2*|3*|4*) false ;; *) true ;; esac && echo "$NMRAF" | grep -q AF_PACKET; then
-    ok "zero-egress open (DHCP + internet work) and close (blocked again, NetworkManager packet sockets denied again)"
-  else
-    bad "zero-egress open/close: open=$OUT5 close=$OUT6 NM RestrictAddressFamilies='$NMRAF'"
-  fi
-else
-  [ "${BLOCKED:-0}" = 1 ] && ok "outbound HTTP to 1.1.1.1 blocked (no control step in this boot; the wire capture is the proof)"
-  ip addr flush dev "$IF"; nmcli device set "$IF" managed yes 2>/dev/null || true
-fi
 
 if [ "$MODE" = full ]; then
   hdr "provisioning a model inside the running system (provision/linux-add-models.sh --target /)"
@@ -233,6 +178,42 @@ if [ "$PROV" = model-cached ] || { [ "$T0" != x ] && [ "$T0" != "$T1" ]; }; then
 else
   bad "chat did not reach the model (provenance $PROV, slots $T0 -> $T1)"
 fi
+
+hdr "zero egress: per-process test"
+code() { "$@" -sS -m 8 -o /dev/null -w '%{http_code}' 2>&1 | tail -n 1; }
+reached() { case "$1" in 2*|3*|4*) return 0 ;; *) return 1 ;; esac; }
+R0=$(code curl http://1.1.1.1/); echo "root:          curl http://1.1.1.1 -> $R0"
+reached "$R0" && ok "root reaches the internet (normal networking)" || bad "root cannot reach the internet ($R0)"
+for u in lecore-llama lecore-chat; do
+  as_u() { setpriv --reuid="$u" --regid="$u" --clear-groups -- "$@"; }
+  RU=$(code as_u curl http://1.1.1.1/); echo "user $u: curl http://1.1.1.1 -> $RU"
+  RU6=$(code as_u curl "http://[2606:4700:4700::1111]/"); echo "user $u: curl http://[2606:4700:4700::1111] -> $RU6"
+  RL=$(code as_u curl http://127.0.0.1:7860/); echo "user $u: curl http://127.0.0.1:7860 -> $RL"
+  if ! reached "$RU" && ! reached "$RU6" && reached "$RL"; then
+    ok "user $u: internet blocked (nftables skuid rule), loopback works"
+  else bad "user $u: internet=$RU/$RU6 loopback=$RL"; fi
+  # the service's own cgroup: a root process moved into it is still blocked (IPAddressDeny=any)
+  CG=/sys/fs/cgroup$(systemctl show -p ControlGroup --value "$u.service")
+  if [ -d "$CG" ]; then
+    sh -c 'sleep 2; exec curl -sS -m 8 -o /dev/null -w "%{http_code}" http://1.1.1.1/ 2>&1' > /tmp/cg-out 2>&1 &
+    P=$!; echo "$P" > "$CG/cgroup.procs"; wait "$P"; RC_=$(tail -n 1 /tmp/cg-out)
+    sh -c 'sleep 2; exec curl -sS -m 8 -o /dev/null -w "%{http_code}" http://127.0.0.1:7860/ 2>&1' > /tmp/cg-out 2>&1 &
+    P=$!; echo "$P" > "$CG/cgroup.procs"; wait "$P"; RCL=$(tail -n 1 /tmp/cg-out)
+    echo "root inside $u.service cgroup: internet -> $RC_, loopback -> $RCL"
+    ! reached "$RC_" && reached "$RCL" && ok "$u.service cgroup: internet blocked even for root (IPAddressDeny), loopback works" \
+      || bad "$u.service cgroup: internet=$RC_ loopback=$RCL"
+  else
+    bad "$u.service is not running (no cgroup $CG)"
+  fi
+done
+nft list chain inet zero_egress output | grep counter
+R1=$(code curl http://1.1.1.1/); reached "$R1" && ok "root still reaches the internet afterwards ($R1)" || bad "root lost the internet ($R1)"
+echo "--- llama.cpp: offline mode and no web UI (no remote assets)"
+LP=$(systemctl show -p MainPID --value lecore-llama.service)
+tr '\0' '\n' < "/proc/$LP/environ" | grep -E '^LLAMA_ARG_(OFFLINE|UI)=' | sort | tr '\n' ' '; echo
+UI=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/); echo "GET http://127.0.0.1:8080/ -> $UI"
+tr '\0' '\n' < "/proc/$LP/environ" | grep -qx 'LLAMA_ARG_OFFLINE=1' && tr '\0' '\n' < "/proc/$LP/environ" | grep -qx 'LLAMA_ARG_UI=0' \
+  && [ "$UI" != 200 ] && ok "llama-server runs offline with its web UI disabled" || bad "llama-server offline/UI settings (UI=$UI)"
 
 hdr "NVIDIA open module, Vulkan"
 modinfo -k "$(uname -r)" nvidia 2>/dev/null | grep -E '^(filename|version|license|signer)' && ok "NVIDIA open kernel module installed for $(uname -r)" || bad "nvidia module missing"

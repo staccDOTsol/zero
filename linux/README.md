@@ -10,7 +10,8 @@ One x86_64 UEFI disk image for all three Zero laptops:
 
 The image boots to a GNOME (Wayland) desktop. On the first boot GNOME's setup assistant creates the
 owner's account; no user or password is baked in. At every login a Zero app window opens on the local
-chat. Nothing on the machine can reach the network (see [Zero egress](#zero-egress)).
+chat. The model's input and output never leave the laptop. The rest of the OS networks normally (see
+[Zero egress](#zero-egress)).
 `flash.md` explains how to write the image to a laptop and add the models.
 
 ## What is in the image
@@ -31,10 +32,13 @@ chat. Nothing on the machine can reach the network (see [Zero egress](#zero-egre
   `ConditionDirectoryNotEmpty=` on the models dir, and an `ExecCondition` that checks the named file
   exists. With no model the unit is *skipped*: it stays inactive, is not failed, and does not restart
   (proven in CI). `lecore-llama.path` starts it as soon as `/etc/lecore-plus/model` is written.
-  It runs as the unprivileged `lecore` user (groups `render`, `video`), with a read-only system.
-  `IPAddressDeny=any` / `IPAddressAllow=localhost` keep it on loopback even if an owner opens the
-  firewall.
-- **`lecore-chat.service`** runs leCore's `chat_server.py` through a small launcher,
+  It runs as its own system user `lecore-llama` (groups `render`, `video`), with a read-only system,
+  confined to loopback (see [Zero egress](#zero-egress)). `LLAMA_ARG_OFFLINE=1` (no model
+  downloads) and `LLAMA_ARG_UI=0` are set in the unit environment, which leaves the command line as
+  specified. The second one turns off llama.cpp's built-in web UI, which lazy-loads a HEIC decoder
+  from cdn.jsdelivr.net in the viewer's browser; Zero's UI is the leCore chat.
+- **`lecore-chat.service`** runs as its own system user `lecore-chat`, confined to loopback. It runs
+  leCore's `chat_server.py` through a small launcher,
   `/opt/lecore-plus/bin/lecore-chat-server`. At the pinned commit, `chat_server.py` starts with no
   model rung ("none") and does not read `LECORE_LLM_URL`. leCore's documented route to a model in
   another process is `$LECORE_LLM_URL` through its own OpenAI-compatible rung
@@ -52,17 +56,28 @@ chat. Nothing on the machine can reach the network (see [Zero egress](#zero-egre
 - **`zero-gpu-memory.service`** and the initramfs script `00-zero-gpu-memory`: see
   [GPU memory](#gpu-memory-strix-halo).
 
-### Runtime downloads in leCore: none
+### Runtime downloads and network features in leCore
 
-At the pinned commit, leCore downloads nothing in the chat path. Its WordNet dictionary ships in
+At the pinned commit leCore has no telemetry, and the chat path downloads nothing. Its WordNet dictionary ships in
 `lecore_data/`. The only runtime fetches are `nltk.download()` calls in demo and benchmark functions
 (`holographic_text.ensure_corpora`, ablation and measure demos). The image pre-stages those NLTK
 packages from a pinned `nltk_data` commit in `/usr/share/nltk_data`: gutenberg, udhr, brown, reuters,
-movie_reviews, europarl_raw, punkt_tab. With no network, the download attempt fails at once and the
-corpora load from disk. Hugging Face code exists only in `assimilation/` scripts, which the chat does
+movie_reviews, europarl_raw, punkt_tab. The service cannot reach the network, so a download attempt
+fails at once and the corpora load from disk. Hugging Face code exists only in `assimilation/` scripts, which the chat does
 not use. `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` and `PIP_NO_INDEX=1` are set for the service
 anyway. The venv installs `requirements.txt` without the test-only `pytest`/`pytest-xdist`. The
 resolved versions are in `BUILDINFO.txt`.
+
+**leCore features that need the network.** Because of the confinement, these do not work on Zero:
+- the chat commands `learn api: <openapi json>` / `use api: svc.endpoint {...}`
+  (`holographic_apilearn`), which call the external HTTP API you describe;
+- `holographic_assetfetch`, which downloads an external asset (HDRI, model, texture) from a URL once
+  and caches it;
+- Settings → "ollama" or any other back end that is not on `127.0.0.1`;
+- the multi-machine modules `holographic_toolclient` (call another leCore node), `holographic_distbus`
+  (message bus across machines) and `holographic_farm` (render-farm workers on other machines).
+
+They fail with a connection error. Nothing is silently proxied.
 
 ## Base: Debian 13 "trixie" + trixie-backports kernel 7.2
 
@@ -85,8 +100,7 @@ Why this base:
 
 - **Real `.deb` browser, no snaps.** Ubuntu ships Firefox and Chromium only as snaps. snapd
   refreshes itself and its snaps from the Snap Store in the background. Debian ships Chromium and
-  Firefox ESR as ordinary packages, and Debian has no snapd and no telemetry (popularity-contest is
-  opt-in, and it is pinned out here).
+  Firefox ESR as ordinary packages, has no snapd, and its popularity-contest is opt-in (not installed).
 - **Kernel 7.2 from Debian itself.** trixie-backports carries the current kernel, firmware and
   Mesa, built and signed by Debian, so the Secure Boot chain stays Debian's (shim → GRUB → kernel).
   - *Strix Halo (gfx1151):* amdgpu has supported GC 11.5.1 since the 6.x series. 7.2 has the
@@ -123,69 +137,39 @@ command line.
 
 ## Zero egress
 
-Enforced:
+"Zero egress" means **the model's input and output never leave the laptop**. It does not mean the
+laptop is offline. The OS networks normally: NetworkManager with DHCP, Wi-Fi, NTP
+(`systemd-timesyncd`), apt and GNOME Software updates, fwupd, and the browser.
 
-- **nftables** (`/etc/nftables.conf`, table `inet zero_egress`): `output` policy **drop**, with only
-  `oifname "lo"` accepted. The `input` and `forward` policies are drop too, with loopback accepted
-  on input. It loads before `network-pre.target`. **Fail closed:** NetworkManager has
-  `Requires=nftables.service`, so if the rules do not load, no network comes up.
-- **No raw frames:** DHCP clients send their first packets through raw packet sockets (`AF_PACKET`),
-  and those bypass nftables. The first CI boot showed this: the VM got a DHCP lease through the
-  firewall. NetworkManager therefore runs with `RestrictAddressFamilies=~AF_PACKET`. It cannot send
-  DHCP or any other raw frame, so the laptop never gets an address. CI records every frame the VM's
-  network card sends (QEMU `filter-dump`). It requires **zero** frames from the OS, from kernel start
-  through all tests, up to the deliberate control step. It also requires the kernel's NIC
-  `tx_packets` counter to read 0.
-- **Firmware is outside the image.** In CI the UEFI firmware (OVMF) sends 2 IPv6 frames (DAD
-  neighbor solicitation and MLD report) when its own network stack binds to the NIC. That happens
-  about 2.5 s after power-on, before GRUB and the kernel. Laptop firmware with network boot enabled
-  can do the same. Turn off **network boot / PXE / UEFI IPv4+IPv6 network stack** in the BIOS (see
-  `flash.md`).
-- **Per-service:** `lecore-llama` and `lecore-chat` run with systemd `IPAddressDeny=any`
-  (loopback only), even if the firewall is opened.
+The two processes that see model input and output are confined to loopback. Each runs as its own
+system user under systemd, and each binds to 127.0.0.1 only:
 
-Disabled, removed or masked:
+| Process | User | Listens on | Confinement |
+|---|---|---|---|
+| llama-server | `lecore-llama` | 127.0.0.1:8080 | `IPAddressDeny=any`, `IPAddressAllow=localhost`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK` (no raw packet sockets) |
+| leCore chat (`chat_server.py`) | `lecore-chat` | 127.0.0.1:7860 | `IPAddressDeny=any`, `IPAddressAllow=localhost`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` |
 
-| What | How |
-|---|---|
-| apt timers, unattended-upgrades | `apt-daily*.timer/service` masked; `APT::Periodic` all 0; unattended-upgrades not installed and pinned out |
-| NTP | `systemd-timesyncd` not installed and masked; chrony/ntpsec pinned out; GNOME automatic time zone off and locked |
-| fwupd | not installed; `fwupd-refresh.timer` masked; LVFS remote disabled if it is ever added |
-| NetworkManager connectivity check | `[connectivity] enabled=false` |
-| GNOME Software / PackageKit / Flatpak | not installed (pinned out), service masked |
-| GNOME Online Accounts | no providers allowed (`whitelisted-providers=['']`, locked); setup page skipped |
-| Location / weather / maps | geoclue masked and its sources disabled; location off and locked; GNOME Weather and Maps not installed |
-| Problem reporting / usage stats | off and locked |
-| Shell extension downloads | `allow-extension-installation=false`, locked |
-| avahi / mDNS, cups-browsed | not installed and masked; no TCP listener outside loopback (checked in CI) |
-| motd-news, popularity-contest, snapd, ModemManager, gnome-remote-desktop | not installed and/or masked |
-| Chromium | enterprise policy `/etc/chromium/policies/managed/zero.json`: no Safe Browsing pings, metrics, variations, component updates, sync, sign-in, search suggestions, translate, DNS-over-HTTPS, network prediction, media router or AI features; plus `--disable-background-networking --disable-component-update --no-pings` |
+- **Layer 1, systemd:** `IPAddressDeny=`/`IPAddressAllow=` is a cgroup BPF filter on every socket in
+  the service, whatever its user, including root. A child process inherits it.
+- **Layer 2, nftables:** `/etc/nftables.conf` holds only table `inet zero_egress`, built from
+  `/usr/lib/zero/nftables-zero.nft.in` at image build time. Its `output` chain has policy
+  **accept** and drops non-loopback output for `meta skuid` of `lecore-llama` and of `lecore-chat`.
+  This covers anything those users run outside the units. Other tables are left alone, so an owner's
+  own firewall can coexist.
+- **Fail closed:** both units have `Requires=nftables.service`. If the rules do not load, the AI
+  services do not start.
+- **The Zero window.** Chromium shows model input and output. The enterprise policy
+  `/etc/chromium/policies/managed/zero.json` turns off only the features that would send page or
+  typed text to Google: Translate, the enhanced spell-check service, and the Help-me-write/Lens/
+  tab-compare/history-search AI features. Everything else in Chromium (Safe Browsing, updates of
+  components, etc.) is left as Debian ships it.
 
-The radios still exist. The Wi-Fi driver and `wpa_supplicant` can scan and associate (802.11
-management and EAPOL frames, below IP), and Bluetooth works. No IP packet can leave, and there is no
-DHCP, so an association leads nowhere. To keep the radios silent too, switch them off (airplane mode,
-or `rfkill block all`).
+Verified in CI (QEMU): as `lecore-llama` and as `lecore-chat`, `curl http://1.1.1.1` (and IPv6)
+fails while `curl http://127.0.0.1:7860` works. A root process moved into each service's cgroup is
+blocked too, and root outside them reaches the internet. See [Smoke test](#smoke-test-ci).
 
-### Opening egress (owner, root)
-
-The owner created at first boot is an administrator (`sudo` group). Opening the network is a
-deliberate, root-only act:
-
-```sh
-zero-egress status                  # BLOCKED / OPEN (anyone can run this)
-sudo zero-egress open               # allow outbound traffic until the next reboot
-sudo zero-egress open --permanent   # allow it from now on (rewrites /etc/nftables.conf)
-sudo zero-egress close              # back to zero egress (restores the shipped rules)
-```
-
-`open` removes the nftables table. It also lifts NetworkManager's packet-socket restriction, through
-a drop-in in `/run` (or in `/etc` with `--permanent`), and restarts NetworkManager so DHCP can run.
-`close` undoes both. The same by hand: `sudo nft delete table inet zero_egress`, then remove the
-`RestrictAddressFamilies=~AF_PACKET` line from
-`/etc/systemd/system/NetworkManager.service.d/zero-egress.conf` and run
-`sudo systemctl daemon-reload && sudo systemctl restart NetworkManager`. Opening the firewall does not
-re-enable time sync, update timers or anything else listed above. The Zero AI services stay
-loopback-only either way.
+To check on a laptop: `sudo nft list table inet zero_egress` (the drop counters) and
+`systemctl show lecore-chat -p IPAddressDeny -p IPAddressAllow`.
 
 ## Secure Boot
 
@@ -255,22 +239,22 @@ boot B uses a throwaway copy.
 
 - **Boot A, pristine image, Secure Boot off, 40 GiB disk:** first boot (root grows to the disk,
   machine-id, no users, gdm + gnome-initial-setup running, Zero branding); TTM limit written and
-  applied, and the initramfs order checked; nftables loaded; NetworkManager denied packet sockets;
-  no IPv4 address acquired; no TCP/UDP listener outside loopback; phone-home units absent or masked;
-  `lecore-llama` skipped cleanly with no model; leCore chat answering memory-only, plus
-  teach/recall. Egress is then tested with a static address set by hand: `curl http://1.1.1.1`
-  fails, DNS fails, loopback works. The wire capture up to this point must contain **zero frames
-  from the VM**. As a control, the firewall is lifted for one request to show the VM *can* reach
-  1.1.1.1 without it. Then `zero-egress open` must give DHCP and internet, and `zero-egress close`
-  must block them again. Then `provision/linux-add-models.sh --target /` installs a tiny test model
-  (SmolLM2-135M-Instruct Q4_K_M, 105 MB, CI only). `lecore-llama.path` starts llama-server, which
-  serves `/v1/chat/completions`, and a chat question goes from leCore to llama-server over
-  `LECORE_LLM_URL`. A screenshot of the first-boot screen is saved.
+  applied, and the initramfs order checked; the per-user nftables rules are loaded and both units
+  carry the confinement properties; the services listen on 127.0.0.1 only; normal networking (DHCP
+  address, DNS, timesyncd and apt timers enabled); `lecore-llama` skipped cleanly with no model;
+  leCore chat answering memory-only, plus teach/recall. Then `provision/linux-add-models.sh
+  --target /` installs a tiny test model (SmolLM2-135M-Instruct Q4_K_M, 105 MB, CI only).
+  `lecore-llama.path` starts llama-server with exactly `--host 127.0.0.1 --port 8080 -ngl 999 -m …`.
+  It serves `/v1/chat/completions`, and a chat question goes from leCore to llama-server over
+  `LECORE_LLM_URL`. **Per-process egress test:** root reaches 1.1.1.1. As `lecore-llama` and as
+  `lecore-chat`, 1.1.1.1 (IPv4 and IPv6) is blocked and loopback works. A root process placed in
+  each service's cgroup is blocked too. llama-server runs with `LLAMA_ARG_OFFLINE=1` and its web UI
+  off. A screenshot of the first-boot screen is saved.
 - **Boot B, Secure Boot ON (OVMF + Microsoft keys):** the image is provisioned on the host with
-  `--image` (forced to grow the image file). It must boot through shim/GRUB/kernel with Secure Boot
-  enforced (`mokutil --sb-state`: enabled; kernel lockdown: integrity) and start llama-server at
-  boot with the pre-provisioned model. It runs the same checks with no control step, so its whole
-  wire capture must contain zero frames from the VM.
+  `--image` (forced to grow the image file), with the test model marked as an "offload" build. It must
+  boot through shim/GRUB/kernel with Secure Boot enforced (`mokutil --sb-state`: enabled; kernel
+  lockdown: integrity). It must start llama-server at boot with `-ngl 999 … --cpu-moe`, and pass the
+  same chat, model and per-process egress checks.
 
 QEMU has no Strix Halo or Blackwell GPU. llama.cpp therefore runs on the CPU in CI, and nothing here
 proves GPU inference. The hardware notes above are about what is installed and built, not what was

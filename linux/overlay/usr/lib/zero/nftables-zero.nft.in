@@ -1,0 +1,17 @@
+#!/usr/sbin/nft -f
+# Zero: the local AI services may only talk to loopback. The model's input and output never leave
+# this laptop. The rest of the system networks normally (DHCP, NTP, apt, the browser).
+#   lecore-llama (uid @UID_LLAMA@) runs llama-server; lecore-chat (uid @UID_CHAT@) runs leCore's chat.
+# This is the second layer. The first is IPAddressDeny=any / IPAddressAllow=localhost in their units.
+# Only this table is replaced; other tables (e.g. a firewall the owner adds) are left alone.
+
+table inet zero_egress
+delete table inet zero_egress
+
+table inet zero_egress {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		meta skuid @UID_LLAMA@ oifname != "lo" counter drop comment "lecore-llama: loopback only"
+		meta skuid @UID_CHAT@ oifname != "lo" counter drop comment "lecore-chat: loopback only"
+	}
+}
