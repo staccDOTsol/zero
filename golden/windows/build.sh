@@ -55,6 +55,12 @@ OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
 # the laptops' drives: Pro 1 TB, Max/Ultra 2 TB (the usual exact byte counts of those NVMe sizes)
 case "$TIER" in pro) NVME_BYTES=1000204886016 ;; *) NVME_BYTES=2000398934016 ;; esac
+# VM sizes and the Windows headroom; the CI smoke test (small runner, tiny test model) lowers them
+NVME_BYTES=${GOLDEN_NVME_BYTES:-$NVME_BYTES}
+OS_GIB=${GOLDEN_OS_GIB:-64}
+SETUP_SMP=${GOLDEN_SETUP_SMP:-16} SETUP_MEM=${GOLDEN_SETUP_MEM:-32}
+VERIFY_SMP=${GOLDEN_VERIFY_SMP:-32} VERIFY_MEM=${GOLDEN_VERIFY_MEM:-96}
+TS=${GOLDEN_TIME_SCALE:-1}   # multiplies every VM timeout
 T0=$SECONDS
 say() { printf '[%s +%dm] %s\n' "$(date -u +%H:%M:%S)" $(((SECONDS - T0) / 60)) "$*"; }
 die() { say "FAILED: $*"; exit 1; }
@@ -77,7 +83,7 @@ SUMMARY=$(python3 "$REPO/golden/lib/catalog.py" --catalog "$CATALOG" summary "$T
 MODEL_BYTES=$(echo "$SUMMARY" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bytes"])')
 # disk = the tier's models + 64 GiB for Windows, the Zero stack and headroom, rounded up to a GiB
 GIB=1073741824
-DISK_BYTES=$(( (MODEL_BYTES + 64 * GIB + GIB - 1) / GIB * GIB ))
+DISK_BYTES=$(( (MODEL_BYTES + OS_GIB * GIB + GIB - 1) / GIB * GIB ))
 [ "$DISK_BYTES" -lt "$NVME_BYTES" ] || die "image ($DISK_BYTES) would not fit the ${NVME_BYTES}-byte drive"
 say "tier $TIER ($TARGET): $(echo "$SUMMARY" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("%d models, %d files, %.1f GB, default %s" % (len(d["models"]), d["files"], d["bytes"]/1e9, d["default"]))')"
 say "image $DISK_BYTES bytes ($((DISK_BYTES / GIB)) GiB) for a $NVME_BYTES-byte NVMe; KVM ok; $(nproc) CPUs, $(free -g | awk '/Mem:/{print $2}') GiB RAM"
@@ -201,7 +207,6 @@ detach() { sync; mountpoint -q "$MNT" && umount "$MNT"; [ -n "$LOOP" ] && losetu
 # ---------------------------------------------------------------------------------------------------
 # 3. Windows Setup -> audit mode -> sysprep, in a VM whose only disk is the image
 DISKDEV=(-drive if=none,id=d0,file="$DISK",format=raw,cache=unsafe,discard=unmap,detect-zeroes=unmap -device nvme,drive=d0,serial=ZEROGOLDEN0001,bootindex=1)
-SETUP_SMP=16 SETUP_MEM=32
 setup_pe() { # A|B: Windows Setup's windowsPE pass (partitions the disk, applies Windows, reboots)
   local m=$1 media
   rm -f "$DISK"; truncate -s "$DISK_BYTES" "$DISK"; cp "$OVMF_VARS" "$VARS"
@@ -213,7 +218,7 @@ setup_pe() { # A|B: Windows Setup's windowsPE pass (partitions the disk, applies
            -drive if=none,id=ans,file="$WORK/answer.img",format=raw -device usb-storage,drive=ans,removable=on)
     { sleep 3; press_keys "$WORK/setup-1$m.qmp"; } &
   fi
-  vm "setup-1$m" 1800 "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" "${media[@]}" -nic none -no-reboot || return 1
+  vm "setup-1$m" $((1800 * TS)) "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" "${media[@]}" -nic none -no-reboot || return 1
   sgdisk -p "$DISK" | tail -n 5
   attach
   if [ -z "$WINPART" ] || ! ntfs-3g -o ro "$WINPART" "$MNT" 2>/dev/null; then detach; return 1; fi
@@ -232,7 +237,7 @@ say "Windows applied ($(df -h "$MNT" | awk 'NR==2{print $3}') used); golden scri
 detach
 
 for n in 2 3 4 5 6; do
-  vm "setup-$n" 2700 "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" -nic none -no-reboot || die "VM setup-$n timed out"
+  vm "setup-$n" $((2700 * TS)) "" "$SETUP_SMP" "$SETUP_MEM" -- "${DISKDEV[@]}" -nic none -no-reboot || die "VM setup-$n timed out"
   grep -a 'zero-golden audit' "$LOGS/setup-$n-serial.log" 2>/dev/null | tr -d '\r' || true
   grep -aq 'ZERO_AUDIT_FAIL' "$LOGS/setup-$n-serial.log" && die "audit mode check failed (see above)"
   grep -aq 'ZERO_SYSPREP_RUN' "$LOGS/setup-$n-serial.log" && break
@@ -342,7 +347,7 @@ else
     : upload "$VS/SetupComplete.cmd" /Windows/Setup/Scripts/SetupComplete.cmd : umount-all
 fi
 cp "$OVMF_VARS" "$VARS"   # a laptop fresh from imaging: no boot entries in its firmware
-VM_START_RE=ZERO_VERIFY_STARTED VM_START_TMO=2700 vm verify 5400 'ZERO_VERIFY_DONE' 32 96 -- \
+VM_START_RE=ZERO_VERIFY_STARTED VM_START_TMO=$((2700 * TS)) vm verify $((5400 * TS)) 'ZERO_VERIFY_DONE' "$VERIFY_SMP" "$VERIFY_MEM" -- \
   -drive if=none,id=d0,file="$OV",format=qcow2,cache=unsafe,discard=unmap -device nvme,drive=d0,serial=ZEROVERIFY0001 \
   -nic user,model=e1000e || VERIFY=FAIL
 tr -d '\r' < "$LOGS/verify-serial.log" | grep -aE '^(VERIFY|ZERO_VERIFY)' | tee "$LOGS/verify-report.txt" || true

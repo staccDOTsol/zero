@@ -16,6 +16,7 @@
      hiberfil.sys.
   Then the task removes itself. Log: C:\ProgramData\leCore+\logs\golden-firstboot.log
 #>
+param([switch]$InSpecialize)   # run from the answer file's specialize pass (image applied with DISM, no task)
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $data = Join-Path $env:ProgramData 'leCore+'
@@ -26,13 +27,14 @@ function Say([string]$m) { $l = "[{0:yyyy-MM-dd HH:mm:ss}] {1}" -f (Get-Date), $
 $ok = $true
 $state = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State' -ErrorAction SilentlyContinue).ImageState
 Say "Zero golden first boot (image state $state)"
-if ($state -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' -or $state -eq 'IMAGE_STATE_UNDEPLOYABLE') {
+if (-not $InSpecialize -and ($state -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' -or $state -eq 'IMAGE_STATE_UNDEPLOYABLE')) {
     # the specialize pass has not finished yet (it installs the stack and the API key): next boot
     Say 'Windows Setup is still in its specialize pass; running at the next boot'
     exit 0
 }
 
 # 1. C: to the end of the disk --------------------------------------------------------------------------
+$extended = $false
 try {
     Update-HostStorageCache -ErrorAction SilentlyContinue
     $c = Get-Partition -DriveLetter C
@@ -45,13 +47,23 @@ try {
         Resize-Partition -DriveLetter C -Size $max
         Say ("C: is now {0:N1} GB" -f ((Get-Partition -DriveLetter C).Size / 1e9))
     }
-} catch { $ok = $false; Say "extend C: failed: $($_.Exception.Message)" }
+    $extended = $true
+} catch { Say "Resize-Partition failed: $($_.Exception.Message)" }
+if (-not $extended) {
+    # same thing with diskpart (works in every Windows Setup pass)
+    $dp = Join-Path $env:TEMP 'zero-extend.txt'
+    Set-Content -LiteralPath $dp -Value "rescan`r`nselect volume C`r`nextend`r`nexit" -Encoding ascii
+    $o = & diskpart.exe /s $dp 2>&1 | Out-String
+    Say ("diskpart extend: exit {0}: {1}" -f $LASTEXITCODE, ($o -replace "`r?`n", ' '))
+    if ($LASTEXITCODE -ne 0 -and $o -notmatch 'not enough usable free space|no usable free extent') { $ok = $false }
+}
 
 # 2. model file ACLs ------------------------------------------------------------------------------------
 try {
     # (the build also wrote C:\Windows\Setup\Scripts\zero-golden offline: same treatment)
-    foreach ($p in (Join-Path $data 'models'), (Join-Path $data 'model.txt'), (Join-Path $data 'models.json'), (Join-Path $env:WINDIR 'Setup\Scripts\zero-golden')) {
-        if (Test-Path -LiteralPath $p) {
+    # the files only: the models folder keeps the LOCAL SERVICE read grant install.ps1 put on it
+    foreach ($p in (Join-Path $data 'models\*'), (Join-Path $data 'model.txt'), (Join-Path $data 'models.json'), (Join-Path $env:WINDIR 'Setup\Scripts\zero-golden')) {
+        if (Test-Path -Path $p) {
             & icacls.exe $p /reset /T /C /Q | Out-Null
             Say ("icacls /reset {0}: exit {1}" -f $p, $LASTEXITCODE)
         }
@@ -73,7 +85,7 @@ try {
     } else { Say 'no OA3 product key in the firmware (not a licensed laptop, or a VM)' }
 } catch { Say "firmware key: $($_.Exception.Message)" }
 
-# 4. per-machine llama-server API key ------------------------------------------------------------------------
+# 4. per-machine llama-server API key (the specialize pass made it just before this script) ---------------
 $key = Join-Path $data 'secret\llama-api-key'
 if (-not (Test-Path -LiteralPath $key)) {
     Say 'llama-server API key missing (answer file replaced?): running install.ps1'
@@ -83,14 +95,16 @@ if (-not (Test-Path -LiteralPath $key)) {
 }
 if (Test-Path -LiteralPath $key) { Say 'llama-server API key present' } else { $ok = $false; Say 'llama-server API key STILL missing' }
 
-# 5. hibernation / Fast Startup back to the Windows default ----------------------------------------------------
-& powercfg.exe /hibernate on 2>&1 | Out-Null
-Say ("powercfg /hibernate on: exit {0}" -f $LASTEXITCODE)
+# 5. hibernation / Fast Startup back to the Windows default (the VM build turned it off for the capture) -------
+if (-not $InSpecialize) {
+    & powercfg.exe /hibernate on 2>&1 | Out-Null
+    Say ("powercfg /hibernate on: exit {0}" -f $LASTEXITCODE)
+}
 
 if ($ok) {
     Say 'done; removing the task'
     Set-Content -LiteralPath (Join-Path $data 'golden-firstboot.done') -Value (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') -Encoding ascii
-    Unregister-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero golden first boot' -Confirm:$false -ErrorAction SilentlyContinue
+    if (-not $InSpecialize) { Unregister-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero golden first boot' -Confirm:$false -ErrorAction SilentlyContinue }
 } else {
     Say 'something failed; the task stays and runs again at the next boot'
 }

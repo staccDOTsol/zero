@@ -10,6 +10,12 @@
     unattend.py shipped ISO_AUTOUNATTEND OUT   handed to sysprep /unattend: the ISO's specialize and
                                                oobeSystem passes unchanged (what every laptop runs on
                                                its first boot), no windowsPE pass
+    unattend.py offline ISO_AUTOUNATTEND OUT   for an image applied with DISM + bcdboot (no VM, no
+                                               sysprep run by us: Microsoft's install.wim is already
+                                               generalized): the shipped passes plus, in specialize after
+                                               the Zero stack install, zero-golden\firstboot.ps1
+                                               -InSpecialize (C: to the end of the disk, model ACLs,
+                                               the firmware OA3 key)
 
 Text surgery on purpose: the specialize/oobeSystem XML stays byte-for-byte what the ISO ships.
 """
@@ -107,12 +113,24 @@ def shipped(text):
     return re.sub(r"(<unattend )", note + r"\1", text, count=1)
 
 
+def offline(text):
+    text = shipped(text)
+    spec = settings_block(text, "specialize")
+    body = spec.group(0)
+    orders = [int(o) for o in re.findall(r"<Order>(\d+)</Order>", body)]
+    cmd = run_sync(max(orders or [0]) + 1, "Zero golden image: C: to the end of the disk, model file ACLs, firmware product key",
+                   r'cmd.exe /c "%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass '
+                   r'-File %WINDIR%\Setup\Scripts\zero-golden\firstboot.ps1 -InSpecialize &gt; %WINDIR%\Setup\Scripts\zero-golden-specialize.log 2&gt;&amp;1"')
+    body = body.replace("      </RunSynchronous>", cmd + "      </RunSynchronous>", 1)
+    return text[:spec.start()] + body + text[spec.end():]
+
+
 def main():
     mode, src, out = sys.argv[1:4]
     text = open(src, encoding="utf-8-sig").read()
     if "@OEM_MODEL@" in text:
         sys.exit("%s still has the @OEM_MODEL@ placeholder: use the autounattend.xml from the built ISO" % src)
-    text = {"build": build, "shipped": shipped}[mode](text)
+    text = {"build": build, "shipped": shipped, "offline": offline}[mode](text)
     xml.dom.minidom.parseString(text.encode("utf-8"))  # well-formed
     with open(out, "w", encoding="utf-8", newline="\r\n") as f:
         f.write(text)
