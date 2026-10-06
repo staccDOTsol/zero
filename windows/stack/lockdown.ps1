@@ -24,7 +24,8 @@
      recognition, tailored experiences, advertising ID.
   Telemetry/remote fetching inside the stack is off by configuration (run-llama.ps1: --offline,
   --no-webui, --cors-origins localhost; lecore_plus_chat.py: Host/Origin checks, CSP; sitecustomize.py:
-  NLTK/Hugging Face offline). Provisioning and model downloads run on the imaging station.
+  NLTK/Hugging Face offline). The models ship on the disk (the golden images, golden/); nothing in the
+  stack downloads them.
 
   Modes:
     (default)            the running Windows (Administrator/SYSTEM): all of the above.
@@ -144,22 +145,46 @@ $Contained = [ordered]@{
     'pythonw'      = (Join-Path $InstallRoot 'python\pythonw.exe')
 }
 
+# Two ways to apply the same rules. The NetSecurity cmdlets (CIM/WMI) are used normally; during Windows
+# Setup's specialize pass WMI providers fail ("Provider failure"), so netsh.exe (firewall RPC, no WMI)
+# does the same job. LECORE_PLUS_NO_CIM=1 forces the netsh path (CI tests it). Rules are identified by
+# their display name in both cases.
+$script:UseCim = ($env:LECORE_PLUS_NO_CIM -ne '1')
+function Test-Cim {
+    if (-not $script:UseCim) { return $false }
+    try { $null = Get-NetFirewallProfile -Profile Public -ErrorAction Stop; return $true }
+    catch { Say "NetSecurity (CIM) unavailable, using netsh.exe: $($_.Exception.Message)"; $script:UseCim = $false; return $false }
+}
+function Invoke-Netsh([string[]]$NetshArgs, [switch]$AllowFail) {
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $out = & (Join-Path $env:SystemRoot 'System32\netsh.exe') @NetshArgs 2>&1 | Out-String; $code = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $old }
+    if ($code -ne 0 -and -not $AllowFail) { throw "netsh $($NetshArgs -join ' ') failed ($code): $($out.Trim())" }
+    return @{ Code = $code; Out = $out }
+}
+function Get-RuleDisplayName([string]$Name, [string]$Dir) { "Zero: $Name stays on this machine ($($Dir.ToLower()))" }
+
 function Invoke-Firewall {
-    if ($script:Cmdlet.ShouldProcess('Domain,Private,Public', 'Set-NetFirewallProfile -Enabled True -DefaultOutboundAction Allow')) {
-        Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True -DefaultOutboundAction Allow
-        Add-Result 'firewall' 'profiles: enabled, default outbound Allow (the OS networks normally)' 'ok'
+    $cim = Test-Cim
+    if ($script:Cmdlet.ShouldProcess('Domain,Private,Public', 'Firewall on, DefaultOutboundAction Allow')) {
+        try {
+            if ($cim) { Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True -DefaultOutboundAction Allow }
+            else {
+                Invoke-Netsh @('advfirewall', 'set', 'allprofiles', 'state', 'on') | Out-Null
+                Invoke-Netsh @('advfirewall', 'set', 'allprofiles', 'firewallpolicy', 'blockinbound,allowoutbound') | Out-Null
+            }
+            Add-Result 'firewall' "profiles: enabled, default outbound Allow (the OS networks normally) [$(if ($cim) { 'cim' } else { 'netsh' })]" 'ok'
+        } catch { Add-Result 'firewall' 'profiles' 'FAILED' $_.Exception.Message }
     } else { Add-Result 'firewall' 'profiles: enabled, default outbound Allow' 'whatif' }
 
     # An earlier Zero build blocked all outbound traffic; undo that if it is present.
-    if (Get-NetFirewallRule -Name 'LecorePlus-ZeroEgress-Block' -ErrorAction SilentlyContinue) {
-        if ($script:Cmdlet.ShouldProcess('LecorePlus-ZeroEgress-Block', 'Remove the old machine-wide outbound block rule')) {
-            Remove-NetFirewallRule -Name 'LecorePlus-ZeroEgress-Block'; Add-Result 'firewall' 'removed old machine-wide block rule' 'ok'
-        }
-    }
-    foreach ($prof in 'DomainProfile', 'PrivateProfile', 'PublicProfile') {
-        $k = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$prof"
-        if ((Test-Path $k) -and (Get-ItemProperty -Path $k -Name DefaultOutboundAction -ErrorAction SilentlyContinue)) {
-            if ($script:Cmdlet.ShouldProcess("$k\DefaultOutboundAction", 'Remove the old outbound-block policy')) {
+    $oldDn = 'Zero: block all non-loopback outbound traffic (zero egress)'
+    if (-not $DryRun) {
+        if ($cim) { Get-NetFirewallRule -Name 'LecorePlus-ZeroEgress-Block' -ErrorAction SilentlyContinue | Remove-NetFirewallRule }
+        else { Invoke-Netsh @('advfirewall', 'firewall', 'delete', 'rule', "name=$oldDn") -AllowFail | Out-Null }
+        foreach ($prof in 'DomainProfile', 'PrivateProfile', 'PublicProfile') {
+            $k = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$prof"
+            if ((Test-Path $k) -and (Get-ItemProperty -Path $k -Name DefaultOutboundAction -ErrorAction SilentlyContinue)) {
                 Remove-ItemProperty -Path $k -Name DefaultOutboundAction; Add-Result 'firewall' "removed old policy $prof\DefaultOutboundAction" 'ok'
             }
         }
@@ -169,51 +194,94 @@ function Invoke-Firewall {
         $prog = $Contained[$name]
         foreach ($dir in 'Outbound', 'Inbound') {
             $id = "LecorePlus-Contain-$name-$($dir.Substring(0, $dir.Length - 5))"
+            $dn = Get-RuleDisplayName $name $dir
             $what = "$dir Block for $prog to/from every non-loopback address"
-            if (-not $script:Cmdlet.ShouldProcess($id, $what)) { Add-Result 'firewall' "$id ($what)" 'whatif'; continue }
+            if (-not $script:Cmdlet.ShouldProcess($dn, $what)) { Add-Result 'firewall' "$dn ($what)" 'whatif'; continue }
             try {
-                Remove-NetFirewallRule -Name $id -ErrorAction SilentlyContinue
-                New-NetFirewallRule -Name $id -DisplayName "Zero: $name stays on this machine ($($dir.ToLower()))" -Group 'Zero (leCore+)' `
-                    -Description 'Zero model containment: the model input/output never leaves the machine. See C:\Program Files\leCore+\setup\README.md.' `
-                    -Direction $dir -Action Block -Profile Any -Program $prog -RemoteAddress $NonLoopback -Enabled True | Out-Null
-                Add-Result 'firewall' $id 'ok' $what
-            } catch { Add-Result 'firewall' $id 'FAILED' $_.Exception.Message }
+                if ($cim) {
+                    Get-NetFirewallRule -DisplayName $dn -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+                    Remove-NetFirewallRule -Name $id -ErrorAction SilentlyContinue
+                    New-NetFirewallRule -Name $id -DisplayName $dn -Group 'Zero (leCore+)' `
+                        -Description 'Zero model containment: the model input/output never leaves the machine. See C:\Program Files\leCore+\setup\README.md.' `
+                        -Direction $dir -Action Block -Profile Any -Program $prog -RemoteAddress $NonLoopback -Enabled True | Out-Null
+                } else {
+                    Invoke-Netsh @('advfirewall', 'firewall', 'delete', 'rule', "name=$dn") -AllowFail | Out-Null
+                    Invoke-Netsh @('advfirewall', 'firewall', 'add', 'rule', "name=$dn", "dir=$(if ($dir -eq 'Outbound') { 'out' } else { 'in' })",
+                        'action=block', "program=$prog", "remoteip=$($NonLoopback -join ',')", 'enable=yes', 'profile=any',
+                        'description=Zero model containment: the model input/output never leaves the machine.') | Out-Null
+                }
+                Add-Result 'firewall' $dn 'ok' $what
+            } catch { Add-Result 'firewall' $dn 'FAILED' $_.Exception.Message }
         }
     }
 
     if (-not $DryRun) {
-        $prof = @(Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { -not $_.Enabled -or $_.DefaultOutboundAction -ne 'Allow' })
-        if ($prof.Count) { Add-Result 'firewall' 'verify profiles' 'FAILED' ('not enabled+Allow: ' + (($prof | ForEach-Object { $_.Name }) -join ', ')) }
+        $bad = @()
+        if ($cim) {
+            $bad += @(Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { -not $_.Enabled -or $_.DefaultOutboundAction -ne 'Allow' } | ForEach-Object { "profile $($_.Name)" })
+        } else {
+            $st = (Invoke-Netsh @('advfirewall', 'show', 'allprofiles') -AllowFail).Out
+            if ($st -notmatch 'AllowOutbound') { $bad += 'profiles (netsh)' }
+        }
         foreach ($name in $Contained.Keys) {
-            foreach ($d in 'Out', 'In') {
-                $id = "LecorePlus-Contain-$name-$d"
-                $r = Get-NetFirewallRule -Name $id -ErrorAction SilentlyContinue
-                $app = if ($r) { ($r | Get-NetFirewallApplicationFilter).Program } else { $null }
-                if (-not $r -or $r.Enabled -ne 'True' -or $r.Action -ne 'Block' -or $app -ne $Contained[$name]) {
-                    Add-Result 'firewall' "verify $id" 'FAILED' "rule missing or wrong (program=$app)"
+            foreach ($dir in 'Outbound', 'Inbound') {
+                $dn = Get-RuleDisplayName $name $dir
+                if ($cim) {
+                    $r = @(Get-NetFirewallRule -DisplayName $dn -ErrorAction SilentlyContinue)
+                    $app = if ($r.Count -eq 1) { ($r[0] | Get-NetFirewallApplicationFilter).Program } else { $null }
+                    if ($r.Count -ne 1 -or $r[0].Enabled -ne 'True' -or $r[0].Action -ne 'Block' -or $app -ne $Contained[$name]) { $bad += "$dn (count=$($r.Count), program=$app)" }
+                } else {
+                    $show = Invoke-Netsh @('advfirewall', 'firewall', 'show', 'rule', "name=$dn", 'verbose') -AllowFail
+                    if ($show.Code -ne 0 -or $show.Out -notmatch [regex]::Escape($Contained[$name]) -or $show.Out -notmatch 'Block') { $bad += "$dn (netsh)" }
                 }
             }
         }
-        if (-not @($script:Results | Where-Object { $_.Area -eq 'firewall' -and $_.Status -eq 'FAILED' }).Count) {
-            Add-Result 'firewall' 'verify active store: profiles Allow, 6 containment rules on the right programs' 'ok'
-        }
+        if ($bad.Count) { Add-Result 'firewall' 'verify' 'FAILED' ($bad -join '; ') }
+        else { Add-Result 'firewall' 'verify: profiles Allow, 6 containment rules on the right programs' 'ok' }
     }
 }
 
 function Register-BootTask {
     $script = Join-Path $InstallRoot 'setup\lockdown.ps1'
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $taskArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -FirewallOnly' -f $script
     if (-not $script:Cmdlet.ShouldProcess('\Zero\Zero model containment check', 'Register boot-time firewall check (SYSTEM)')) {
         Add-Result 'task' 'boot-time model containment check' 'whatif'; return
     }
-    Unregister-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero zero-egress check' -Confirm:$false -ErrorAction SilentlyContinue
-    $action = New-ScheduledTaskAction -Execute $ps -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -FirewallOnly' -f $script)
-    $trigger = New-ScheduledTaskTrigger -AtStartup
-    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
-    Register-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero model containment check' -Action $action -Trigger $trigger `
-        -Principal $principal -Settings $settings -Force | Out-Null
-    Add-Result 'task' 'boot-time model containment check (\Zero\)' 'ok'
+    try {
+        if (-not $script:UseCim) { throw 'CIM disabled' }
+        Unregister-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero zero-egress check' -Confirm:$false -ErrorAction SilentlyContinue
+        $action = New-ScheduledTaskAction -Execute $ps -Argument $taskArgs
+        $trigger = New-ScheduledTaskTrigger -AtStartup
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+        Register-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero model containment check' -Action $action -Trigger $trigger `
+            -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Add-Result 'task' 'boot-time model containment check (\Zero\) [cim]' 'ok'
+    } catch {
+        # schtasks.exe + task XML: no WMI (works in Windows Setup's specialize pass)
+        $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Zero: re-apply the model containment firewall rules at every start</Description></RegistrationInfo>
+  <Triggers><BootTrigger><Enabled>true</Enabled></BootTrigger></Triggers>
+  <Principals><Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>$([Security.SecurityElement]::Escape($ps))</Command><Arguments>$([Security.SecurityElement]::Escape($taskArgs))</Arguments></Exec></Actions>
+</Task>
+"@
+        $f = Join-Path $env:TEMP 'zero-containment-task.xml'
+        [IO.File]::WriteAllText($f, $xml, (New-Object Text.UnicodeEncoding($false, $true)))
+        $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        $out = & schtasks.exe /Create /TN '\Zero\Zero model containment check' /XML $f /F 2>&1 | Out-String
+        $code = $LASTEXITCODE; $ErrorActionPreference = $old
+        Remove-Item -Force $f -ErrorAction SilentlyContinue
+        if ($code -eq 0) { Add-Result 'task' 'boot-time model containment check (\Zero\) [schtasks]' 'ok' }
+        else { Add-Result 'task' 'boot-time model containment check' 'FAILED' "schtasks ($code): $($out.Trim())" }
+    }
 }
 
 # ---- 2-4. registry -----------------------------------------------------------------------------------

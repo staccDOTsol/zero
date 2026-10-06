@@ -191,7 +191,7 @@ $whatIfs = ([regex]::Matches($lk, '\[lockdown\] WHATIF ')).Count
 $fwAfter = (Get-NetFirewallProfile | Sort-Object Name | ForEach-Object { "$($_.Name):$($_.Enabled):$($_.DefaultOutboundAction)" }) -join ' '
 $rulesAfter = @(Get-NetFirewallRule -Direction Outbound -Enabled True -ErrorAction SilentlyContinue).Count
 Check 'lockdown.ps1 -WhatIf runs clean' ($lkOk -and $whatIfs -ge 25) ("$whatIfs planned actions; " + (($lk -split "`n" | Where-Object { $_ -match 'results:' }) -join ' '))
-Check 'lockdown -WhatIf changed nothing on the runner' ($fwBefore -eq $fwAfter -and $rulesBefore -eq $rulesAfter -and -not (Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue)) "firewall before=[$fwBefore] after=[$fwAfter]; enabled outbound rules $rulesBefore -> $rulesAfter"
+Check 'lockdown -WhatIf changed nothing on the runner' ($fwBefore -eq $fwAfter -and $rulesBefore -eq $rulesAfter -and -not (Get-NetFirewallRule -DisplayName 'Zero: * stays on this machine (*)' -ErrorAction SilentlyContinue)) "firewall before=[$fwBefore] after=[$fwAfter]; enabled outbound rules $rulesBefore -> $rulesAfter"
 $guardMsg = Invoke-Quiet { & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '$root\setup\lockdown.ps1' -WhatIf:`$false" } | Out-String
 Check 'full lockdown (machine policy) refuses to run on a CI runner' ($guardMsg -match 'Refusing to apply the full Zero lockdown') (($guardMsg -split "`n" | Select-Object -First 2) -join ' ')
 $lk | Set-Content -LiteralPath (Join-Path (Split-Path $Report) 'lockdown-whatif.txt') -Encoding utf8
@@ -207,7 +207,7 @@ function Get-HttpCode([string]$Exe, [string[]]$More) {
 $testUrl = 'https://pypi.org/simple/'
 $fo = Invoke-Quiet { & (Join-Path $root 'setup\lockdown.ps1') -FirewallOnly } | Out-String
 Write-Host $fo
-$rules = @(Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue)
+$rules = @(Get-NetFirewallRule -DisplayName 'Zero: * stays on this machine (*)' -ErrorAction SilentlyContinue)
 $ruleInfo = ($rules | ForEach-Object { "{0} {1} {2} {3}" -f $_.Name, $_.Direction, $_.Action, (($_ | Get-NetFirewallApplicationFilter).Program) }) -join ' / '
 $profAllow = @(Get-NetFirewallProfile | Where-Object { $_.Enabled -and $_.DefaultOutboundAction -eq 'Allow' }).Count -eq 3
 Check 'containment applied: 6 per-program Block rules, every profile default outbound Allow' ($rules.Count -eq 6 -and $profAllow) "$ruleInfo"
@@ -255,6 +255,26 @@ $csp = ($hdr -split "`n" | Where-Object { $_ -match '^Content-Security-Policy:' 
 Check 'chat refuses DNS-rebinding hosts and cross-site posts; CSP keeps the page on 127.0.0.1' ($h1 -eq '403' -and $h2 -eq '403' -and $csp -match "default-src 'self'") "foreign Host -> $h1, foreign Origin POST -> $h2; $($csp.Trim())"
 $cors = (Invoke-Quiet { & $curl -s -D - -o NUL --max-time 20 -H 'Origin: https://attacker.example' 'http://127.0.0.1:8080/v1/models' } | Out-String)
 Check 'llama-server does not grant CORS to other sites' ($cors -notmatch 'Access-Control-Allow-Origin:\s*(\*|https://attacker)') (($cors -split "`n" | Where-Object { $_ -match '^HTTP/|Access-Control' }) -join ' / ')
+
+# 8d. the same containment through netsh.exe + schtasks.exe (the no-WMI path Windows Setup's specialize
+#     pass takes, where CIM fails with "Provider failure") -----------------------------------------------
+Get-NetFirewallRule -DisplayName 'Zero: * stays on this machine (*)' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+$env:LECORE_PLUS_NO_CIM = '1'
+$nsLog = Invoke-Quiet { & (Join-Path $root 'setup\lockdown.ps1') -FirewallOnly -InstallBootTask 6>&1 } | Out-String
+Remove-Item Env:\LECORE_PLUS_NO_CIM
+Write-Host $nsLog
+$csv = Get-ChildItem (Join-Path $data 'lockdown') -Filter 'lockdown-live-*.csv' | Sort-Object LastWriteTime | Select-Object -Last 1
+$nsOut = if ($csv) { Get-Content -Raw -LiteralPath $csv.FullName } else { '' }
+Write-Host $nsOut
+$rules2 = @(Get-NetFirewallRule -DisplayName 'Zero: * stays on this machine (*)' -ErrorAction SilentlyContinue)
+$progs2 = ($rules2 | ForEach-Object { ($_ | Get-NetFirewallApplicationFilter).Program } | Sort-Object -Unique) -join ', '
+$addr2 = (($rules2 | Select-Object -First 1 | Get-NetFirewallAddressFilter).RemoteAddress) -join ' '
+$task2 = Get-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero model containment check' -ErrorAction SilentlyContinue
+Check 'netsh/schtasks path (no WMI): 6 rules on the 3 programs, boot task registered' ($nsOut -match '\[netsh\]' -and $rules2.Count -eq 6 -and $progs2 -match 'llama-server' -and $task2 -and $task2.Principal.UserId -match 'SYSTEM|S-1-5-18') ("rules=$($rules2.Count) programs=[$progs2] remote=[$addr2] task=$(if ($task2) { "$($task2.TaskPath)$($task2.TaskName) as $($task2.Principal.UserId)" } else { 'missing' })")
+$o3 = (Invoke-Quiet { & (Join-Path $root 'python\python.exe') -X utf8 $probeFile } | Out-String).Trim()
+$o4 = (Invoke-Quiet { & $otherPy $probeFile } | Out-String).Trim()
+Check 'netsh-made rules: leCore python.exe blocked, another Python not' ($o3 -match 'TCP-FAIL' -and $o3 -notmatch '-OK' -and $o4 -match 'TCP-OK') ("leCore: $($o3 -replace "`r?`n", ' | ') // other: $($o4 -replace "`r?`n", ' | ')")
+$null = Invoke-Quiet { & schtasks.exe /Delete /TN '\Zero\Zero model containment check' /F }
 
 # 8c. the Vulkan backend on a software Vulkan device (CI only; never shipped) ----------------------
 # The runner has no GPU. Install the Khronos loader + Mesa lavapipe, restart the model service (it runs as

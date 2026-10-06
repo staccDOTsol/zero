@@ -28,21 +28,22 @@ procedure, nothing Zero-specific for the imaging team to do.
 
 **Windows** is a *generalized full-disk image*: Windows 11 Pro installed from the Zero ISO of the
 laptop model (`windows-*` release: Microsoft's Windows 11 Pro, the laptop's drivers injected, the Zero
-stack staged), taken through the ISO's own specialize pass (which installs the Zero stack and the
-model containment), checked in audit mode, then `sysprep /generalize /oobe /shutdown`. The models are
-then written into `C:\ProgramData\leCore+\models`. On each laptop's first boot Windows specializes
-(new SID, Plug and Play on the laptop's hardware with the drivers in the driver store, a fresh
-per-machine llama-server API key), the `\Zero\Zero golden first boot` task grows C: to the end of the
-NVMe, resets the model files' ACLs and installs the Windows 11 Pro key from the laptop's firmware
-(OA3/MSDM; activation then happens online), and OOBE asks the owner for a local account. Why this and
-not a WIM:
+stack staged). Setup runs the ISO's own specialize pass; then, in audit mode, the Zero stack and the
+model containment are installed (again) by the ISO's `install.ps1` in full Windows and checked, and
+`sysprep /generalize /oobe /shutdown` generalizes the install. The models are then written into
+`C:\ProgramData\leCore+\models`. On each laptop's first boot Windows specializes (new SID, Plug and
+Play on the laptop's hardware with the drivers in the driver store) and runs `windows/firstboot.ps1`:
+C: grows to the end of the NVMe, the model files' ACLs are reset, a per-machine llama-server API key
+is made, and the Windows 11 Pro key from the laptop's firmware (OA3/MSDM) is installed (activation
+then happens online). The `\Zero\Zero golden first boot` startup task runs the same script again
+and removes itself. OOBE asks the owner for a local account; the model service and the chat are
+already running behind it. Why this and not a WIM:
 
 - it is what could be built and *verified end to end* here: the exact bytes that are uploaded are
   booted for their first boot in QEMU/KVM and checked (below). A WIM would need a second, separate
   apply step (`DISM /Apply-Image` + `bcdboot`) between the artifact and anything that can be tested;
 - the stack is installed *before* sysprep, so the image works even if an imaging service replaces the
-  answer file: the first-boot task does not depend on it, and makes the API key itself if the
-  specialize pass did not;
+  answer file: the first-boot task does not depend on it;
 - one file per laptop, one procedure for both OSes, and the models stay inside C: (no separate data
   partition, nothing to assemble).
 
@@ -77,8 +78,8 @@ image, copies the models in, re-hashes every copy, writes `zero-models.json` and
 Each Windows job (`ci/golden-windows.yml` → `windows/build.sh`): models download in the background →
 the laptop's Zero ISO is rebuilt as a build ISO (same files, no-prompt UEFI boot, the build answer
 file from `windows/unattend.py`) → QEMU/KVM: Windows Setup onto the VM's only disk (the image file,
-sized models + 64 GiB), the ISO's specialize pass, audit mode, `windows/audit.ps1` (stack checks,
-first-boot task, per-machine state removed), sysprep → the models into the NTFS volume, `model.txt`,
+sized models + 64 GiB), the ISO's specialize pass, audit mode, `windows/audit.ps1` (`install.ps1`,
+stack checks, first-boot task, per-machine state removed), sysprep → the models into the NTFS volume, `model.txt`,
 `models.json` → every model re-read from the image (ntfs-3g, read-only, cold cache) and sha256-checked
 → first-boot verification → upload.
 
@@ -90,7 +91,8 @@ first-boot task, per-machine state removed), sysprep → the models into the NTF
    of the laptop's NVMe (1 TB Pro, 2 TB Max/Ultra), with a fresh firmware variable store, as on a
    laptop just written by an imaging team. A test-only script, on its own disk (Linux:
    `linux/guest.sh`, started through a VM-only systemd credential; Windows: `windows/verify.ps1`,
-   called from the overlay's `SetupComplete.cmd`), checks:
+   started by one line added to the overlay's copy of the first-boot script, so it runs from the
+   image's own startup task during OOBE), checks:
    - generalized first boot: Linux root grows to the drive, machine-id and API key made, no user;
      Windows `IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE`, a new machine SID, no enabled account, the OOBE
      answer file, C: grown to the drive, the first-boot task done, the laptop's drivers in the driver

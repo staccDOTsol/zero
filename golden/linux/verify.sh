@@ -92,7 +92,7 @@ boot() { # SMP MEM_G SECUREBOOT(0|1) -> 0 done, 1 failed, 2 the VM died before t
     -serial file:"$LOG" -qmp unix:"$SOCK",server=on,wait=off \
     -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.zero-golden-check.service=$UNIT" \
     -smbios "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.graphical.target=$DROPIN" \
-    -no-reboot 2> "$OUT/qemu-stderr.log" &
+    2> "$OUT/qemu-stderr.log" &
   pid=$!; t0=$SECONDS
   while kill -0 "$pid" 2>/dev/null; do
     if grep -aq ZERO_GOLDEN_DONE "$LOG" 2>/dev/null; then sleep 40; kill -0 "$pid" 2>/dev/null && kill "$pid"; rc=0; break; fi
@@ -109,8 +109,9 @@ boot() { # SMP MEM_G SECUREBOOT(0|1) -> 0 done, 1 failed, 2 the VM died before t
   fi
   return "$rc"
 }
-# as the laptop ships first; if that VM dies during firmware/boot (seen with OVMF+SMM on large nested
-# guests), a smaller VM with Secure Boot, then Secure Boot off. The report says which one ran.
+# As the laptop ships first. No -no-reboot: OVMF with SMM (Secure Boot) resets once on the first boot
+# of a large-memory VM, and with -no-reboot QEMU would exit there. If the VM still dies before the
+# check starts: a smaller VM with Secure Boot, then Secure Boot off. The report says which one ran.
 SMP=$(nproc); [ "$SMP" -gt 32 ] && SMP=32
 MEM=$(( HOSTMEM * 6 / 10 )); [ "$MEM" -gt 96 ] && MEM=96
 BRC=2

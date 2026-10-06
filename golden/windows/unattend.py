@@ -100,16 +100,21 @@ def build(text):
 def shipped(text):
     pe = settings_block(text, "windowsPE")
     text = text[:pe.start()] + text[pe.end():]
-    # The stack is installed before sysprep, so the image does not re-run install.ps1 in specialize:
-    # there it stops at Win32_Service.Change ("Provider failure", WMI) after removing the services. The
-    # per-machine API key comes from the first-boot task (firstboot.ps1 runs install.ps1 in full Windows).
-    text, n = re.subn(r'[ \t]*<RunSynchronousCommand wcm:action="add">(?:(?!</RunSynchronousCommand>).)*?lecore-plus\\install\.ps1.*?</RunSynchronousCommand>[ \t]*\r?\n', '', text, flags=re.S)
-    if n != 1:
-        sys.exit("expected one install.ps1 command in the specialize pass, found %d" % n)
+    # The stack is installed before sysprep (audit mode), so the image does not re-run install.ps1 in
+    # specialize; in its place the golden first-boot step: C: to the end of the disk, model file ACLs,
+    # the per-machine API key, the firmware product key (golden/windows/firstboot.ps1 -InSpecialize).
+    m = re.search(r'(?P<ind>[ \t]*)<RunSynchronousCommand wcm:action="add">\s*<Order>(?P<ord>\d+)</Order>(?:(?!</RunSynchronousCommand>).)*?'
+                  r'lecore-plus\\install\.ps1.*?</RunSynchronousCommand>[ \t]*\r?\n', text, flags=re.S)
+    if not m:
+        sys.exit("expected the install.ps1 command in the specialize pass")
+    cmd = run_sync(int(m.group("ord")), "Zero golden image: C: to the end of the disk, model file ACLs, per-machine API key, firmware product key",
+                   r'cmd.exe /c "%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass '
+                   r'-File &quot;%ProgramFiles%\leCore+\golden\firstboot.ps1&quot; -InSpecialize &gt; %WINDIR%\Setup\Scripts\zero-golden-specialize.log 2&gt;&amp;1"')
+    text = text[:m.start()] + cmd + text[m.end():]
     note = ("<!--\n  Zero golden image: the answer file sysprep /generalize /oobe left in the image\n"
             "  (golden/windows/unattend.py shipped = the ISO's autounattend.xml without its windowsPE pass).\n"
-            "  On each laptop's first boot: specialize (unique SID, PnP with the injected drivers), then OOBE\n"
-            "  (owner creates the account); the \\Zero\\Zero golden first boot task makes the per-machine API key.\n-->\n")
+            "  On each laptop's first boot: specialize (unique SID, PnP with the injected drivers, the golden\n"
+            "  first-boot step: C: grown, per-machine API key), then OOBE (the owner creates the account).\n-->\n")
     return re.sub(r"(<unattend )", lambda m: note + m.group(1), text, count=1)
 
 

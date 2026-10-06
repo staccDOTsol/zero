@@ -49,16 +49,16 @@ try {
 
     # 1. the stack -----------------------------------------------------------------------------------
     $marker = Join-Path $root 'installed.json'
+    $specLog = Join-Path $env:WINDIR 'Setup\Scripts\lecore-plus-specialize.log'
     $specializeOk = Test-Path -LiteralPath $marker
-    if (-not $specializeOk) {
-        # The ISO's specialize-pass install stops at Win32_Service.Change ("Provider failure": WMI is not
-        # usable there). Install the stack here instead, in full Windows, where it works.
-        $tail = (Get-Content -LiteralPath (Join-Path $env:WINDIR 'Setup\Scripts\lecore-plus-specialize.log') -Tail 8 -ErrorAction SilentlyContinue) -join ' | '
-        Say "specialize pass did not finish the stack install ($marker missing): $tail"
-        Say 'installing the stack in audit mode (install.ps1 -Phase golden-audit)'
-        & (Join-Path $env:WINDIR 'Setup\Scripts\lecore-plus\install.ps1') -Phase golden-audit *>&1 | ForEach-Object { Say "  $_" }
-        if (-not (Test-Path -LiteralPath $marker)) { Fail "install.ps1 in audit mode did not install the stack either" }
-    }
+    $tail = (Get-Content -LiteralPath $specLog -Tail 12 -ErrorAction SilentlyContinue) -join ' | '
+    Say ("specialize-pass install (the ISO's answer file): {0}; log tail: {1}" -f $(if ($specializeOk) { 'stack installed' } else { 'did NOT finish' }), $tail)
+    # Run the installer again here, in full Windows, whatever the specialize pass did: it is idempotent
+    # (an identical stack is kept), and it re-registers the services, the API key, the firewall rules and
+    # the boot task with every Windows component available. The image does not depend on specialize.
+    Say 'install.ps1 -Phase golden-audit'
+    & (Join-Path $env:WINDIR 'Setup\Scripts\lecore-plus\install.ps1') -Phase golden-audit *>&1 | ForEach-Object { Say "  $_" }
+    if (-not (Test-Path -LiteralPath $marker)) { Fail "install.ps1 did not install the stack ($marker missing)" }
     Say ("stack: " + ((Get-Content -Raw -LiteralPath $marker) -replace "`r?`n", ' '))
     foreach ($id in 'lecore-llama', 'lecore-chat') {
         $svc = Get-CimInstance Win32_Service -Filter "Name='$id'"
@@ -109,7 +109,8 @@ try {
         windows = "$($os.Caption) $($os.Version)"
         build_machine_sid = ((New-Object Security.Principal.NTAccount('Administrator')).Translate([Security.Principal.SecurityIdentifier]).AccountDomainSid.Value)
         build_api_key_sha256 = $buildKeySha
-        stack_installed_in = $(if ($specializeOk) { 'specialize' } else { 'audit (specialize-pass install failed: Win32_Service.Change provider failure)' })
+        specialize_install_ok = $specializeOk
+        stack_installed_in = 'audit mode (install.ps1 -Phase golden-audit)'
         image = (Get-Content -Raw -LiteralPath (Join-Path $env:WINDIR 'Setup\Scripts\lecore-plus\zero-image.json') -ErrorAction SilentlyContinue | ConvertFrom-Json)
     }
     [IO.File]::WriteAllText((Join-Path $data 'golden.json'), ($g | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
