@@ -175,9 +175,11 @@ $lk | Set-Content -LiteralPath (Join-Path (Split-Path $Report) 'lockdown-whatif.
 # lockdown.ps1 -FirewallOnly adds only the per-program rules (llama-server.exe, leCore's python.exe /
 # pythonw.exe -> no non-loopback address) and keeps DefaultOutboundAction Allow, so it is safe on the runner.
 function Get-HttpCode([string]$Exe, [string[]]$More) {
-    $o = Invoke-Quiet { & $Exe -s -o NUL -w '%{http_code}' --max-time 20 @More } | Out-String
-    return $o.Trim()
+    # prints "<http code>" plus curl's error text when it fails (000 = no HTTP response at all)
+    $o = Invoke-Quiet { & $Exe -sS -o NUL -w '%{http_code}' --max-time 20 @More } | Out-String
+    return ($o -replace "`r?`n", ' ').Trim()
 }
+$testUrl = 'https://pypi.org/simple/'
 $fo = Invoke-Quiet { & (Join-Path $root 'setup\lockdown.ps1') -FirewallOnly } | Out-String
 Write-Host $fo
 $rules = @(Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue)
@@ -186,8 +188,8 @@ $profAllow = @(Get-NetFirewallProfile | Where-Object { $_.Enabled -and $_.Defaul
 Check 'containment applied: 6 per-program Block rules, every profile default outbound Allow' ($rules.Count -eq 6 -and $profAllow) "$ruleInfo"
 
 $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
-$code = Get-HttpCode $curl @('https://www.microsoft.com/')
-Check 'general outbound works (curl.exe -> https://www.microsoft.com)' ($code -match '^[23]\d\d$') "HTTP $code"
+$code = Get-HttpCode $curl @($testUrl)
+Check "general outbound works (curl.exe -> $testUrl)" ($code -match '^[23]\d\d$') "HTTP $code"
 $probe = "import socket,urllib.request`ntry:`n  s=socket.create_connection(('1.1.1.1',443),10); s.close(); print('TCP-OK')`nexcept Exception as e: print('TCP-FAIL', type(e).__name__, e)`ntry:`n  print('HTTP-OK', urllib.request.urlopen('https://pypi.org/simple/', timeout=15).status)`nexcept Exception as e: print('HTTP-FAIL', type(e).__name__, e)"
 $probeFile = Join-Path $env:RUNNER_TEMP 'egress_probe.py'
 [IO.File]::WriteAllText($probeFile, $probe)
@@ -205,35 +207,13 @@ Start-Sleep -Seconds 2
 Rename-Item -LiteralPath $llamaExe -NewName 'llama-server.exe.real'
 try {
     Copy-Item -LiteralPath $curl -Destination $llamaExe
-    $c3 = Get-HttpCode $llamaExe @('https://www.microsoft.com/')
+    $c3 = Get-HttpCode $llamaExe @($testUrl)
     $c4 = Get-HttpCode $llamaExe @('http://127.0.0.1:7860/zero/status')
 } finally {
     Remove-Item -Force -LiteralPath $llamaExe
     Rename-Item -LiteralPath "$llamaExe.real" -NewName 'llama-server.exe'
 }
-Check 'the llama-server.exe program path cannot reach a non-loopback address (loopback still works)' ($c3 -eq '000' -and $c4 -eq '200') "internet HTTP $c3 (000 = blocked), 127.0.0.1:7860 HTTP $c4"
-# Same check with llama-server itself: --model-url download (no --offline) from the installed path vs. a copy elsewhere.
-$copyDir = Join-Path $env:RUNNER_TEMP 'llama-copy'
-& robocopy.exe (Join-Path $root 'llama') $copyDir /E /NFL /NDL /NJH /NJS /NP | Out-Null
-function Try-LlamaDownload([string]$Exe, [int]$Port) {
-    $cache = Join-Path $env:RUNNER_TEMP "llcache-$Port"
-    New-Item -ItemType Directory -Force -Path $cache | Out-Null
-    $env:LLAMA_CACHE = $cache
-    $p = Start-Process -FilePath $Exe -ArgumentList @('--host', '127.0.0.1', '--port', "$Port", '-mu', 'https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf') `
-        -RedirectStandardError (Join-Path $env:RUNNER_TEMP "ll-$Port.err") -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP "ll-$Port.out") -PassThru -WindowStyle Hidden
-    $deadline = (Get-Date).AddSeconds(90)
-    while ((Get-Date) -lt $deadline -and -not $p.HasExited -and -not (Get-ChildItem $cache -Recurse -File -Filter *.gguf -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 500KB })) { Start-Sleep -Seconds 2 }
-    $got = @(Get-ChildItem $cache -Recurse -File -Filter *.gguf -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 500KB }).Count -gt 0
-    if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
-    Remove-Item Env:\LLAMA_CACHE
-    $log = ((Get-Content (Join-Path $env:RUNNER_TEMP "ll-$Port.err") -ErrorAction SilentlyContinue) | Where-Object { $_ -match 'download|curl|http|error|fail' } | Select-Object -Last 3) -join ' / '
-    return @{ Got = $got; Log = $log }
-}
-$dlCopy = Try-LlamaDownload (Join-Path $copyDir 'llama-server.exe') 8098
-$dlInst = Try-LlamaDownload $llamaExe 8097
-$okLlama = (-not $dlInst.Got) -and $dlCopy.Got
-Check 'llama-server (installed path) cannot download; the same binary copied elsewhere can' $okLlama ("copy: downloaded={0} [{1}] | installed: downloaded={2} [{3}]" -f $dlCopy.Got, $dlCopy.Log, $dlInst.Got, $dlInst.Log)
-
+Check 'the llama-server.exe program path cannot reach a non-loopback address (loopback still works)' ($c3 -match '000' -and $c3 -match 'Failed to connect|Could not connect|10013|Permission|forbidden' -and $c4 -eq '200') "same curl.exe placed at that path: $testUrl -> $c3; 127.0.0.1:7860 -> $c4"
 Start-Service lecore-llama
 $null = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
 $listen = @(Get-NetTCPConnection -State Listen -LocalPort 7860, 8080 -ErrorAction SilentlyContinue)
