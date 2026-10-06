@@ -9,6 +9,10 @@
 
   1. C: grows to the end of the disk. The golden image is only as large as Windows + the tier's
      models; written onto a 1 TB / 2 TB NVMe the rest of the disk would otherwise sit unallocated.
+     Windows Setup put its Recovery partition right after C:, which blocks that, so (as the task, in
+     full Windows) WinRE is moved onto C: first: reagentc /disable (winre.wim goes back to
+     C:\Windows\System32\Recovery), the Recovery partition is deleted, C: is extended, and
+     reagentc /enable turns WinRE back on (it then lives in C:\Recovery\WindowsRE).
   2. The model files were written into C:\ProgramData\leCore+\models by the image build (offline, from
      Linux): their ACLs are reset to the folder's inherited ones (LOCAL SERVICE read, users read).
   3. The laptop's own Windows 11 Pro key from its firmware (OA3 / ACPI MSDM) is installed, if the
@@ -18,6 +22,7 @@
      The image carries none: golden/windows/audit.ps1 deleted the build VM's key before sysprep.
   5. Hibernation (and with it Fast Startup) back on: it was off only so the image carries no
      hiberfil.sys.
+  6. The two Zero services are running (started if a busy first boot left one stopped).
   Then the task removes itself. Log: C:\ProgramData\leCore+\logs\golden-firstboot.log
 #>
 param([switch]$InSpecialize)   # run from the answer file's specialize pass (image applied with DISM, no task)
@@ -39,6 +44,29 @@ if (-not $InSpecialize -and ($state -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' 
 # (golden test hook point: the build's throwaway verification overlay adds a line here)
 
 # 1. C: to the end of the disk --------------------------------------------------------------------------
+$reDisabled = $false
+if (-not $InSpecialize) {
+    # 1a. the Recovery partition right after C: (GPT type de94bba4-...) moves onto C:
+    try {
+        $c = Get-Partition -DriveLetter C
+        $after = @(Get-Partition -DiskNumber $c.DiskNumber | Where-Object { $_.Offset -gt $c.Offset } | Sort-Object Offset)
+        $rec = @($after | Where-Object { $_.GptType -eq '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' })
+        if ($after.Count -eq 1 -and $rec.Count -eq 1) {
+            Say ("Recovery partition {0} ({1:N2} GB) after C:; reagentc /info: {2}" -f $rec[0].PartitionNumber, ($rec[0].Size / 1e9),
+                ((& reagentc.exe /info 2>&1 | Where-Object { $_ -match 'status|location' }) -join ' ' -replace '\s+', ' '))
+            $o = (& reagentc.exe /disable 2>&1) -join ' '
+            Say "reagentc /disable: exit $LASTEXITCODE $o"
+            if (Test-Path -LiteralPath (Join-Path $env:WINDIR 'System32\Recovery\Winre.wim')) {
+                $reDisabled = $true
+                Remove-Partition -DiskNumber $c.DiskNumber -PartitionNumber $rec[0].PartitionNumber -Confirm:$false
+                Say "deleted the Recovery partition; WinRE image is in C:\Windows\System32\Recovery"
+            } else {
+                Say 'WinRE image is not back on C: after reagentc /disable; Recovery partition kept'
+                $ok = $false
+            }
+        }
+    } catch { $ok = $false; Say "moving WinRE onto C: failed: $($_.Exception.Message)" }
+}
 $extended = $false
 try {
     Update-HostStorageCache -ErrorAction SilentlyContinue
@@ -61,6 +89,14 @@ if (-not $extended) {
     $o = & diskpart.exe /s $dp 2>&1 | Out-String
     Say ("diskpart extend: exit {0}: {1}" -f $LASTEXITCODE, ($o -replace "`r?`n", ' '))
     if ($LASTEXITCODE -ne 0 -and $o -notmatch 'not enough usable free space|no usable free extent') { $ok = $false }
+}
+
+if ($reDisabled -or (-not $InSpecialize -and ((& reagentc.exe /info 2>&1) -join ' ') -match 'Windows RE status:\s*Disabled')) {
+    $o = (& reagentc.exe /enable 2>&1) -join ' '
+    Say "reagentc /enable: exit $LASTEXITCODE $o"
+    $info = (& reagentc.exe /info 2>&1 | Where-Object { $_ -match 'status|location' }) -join ' ' -replace '\s+', ' '
+    Say "reagentc /info: $info"
+    if ($info -notmatch 'status:\s*Enabled') { $ok = $false }
 }
 
 # 2. model file ACLs ------------------------------------------------------------------------------------
@@ -113,6 +149,18 @@ try {
 if (-not $InSpecialize) {
     & powercfg.exe /hibernate on 2>&1 | Out-Null
     Say ("powercfg /hibernate on: exit {0}" -f $LASTEXITCODE)
+}
+
+# 6. the Zero services are running ---------------------------------------------------------------------------
+if (-not $InSpecialize) {
+    foreach ($id in 'lecore-llama', 'lecore-chat') {
+        $svc = Get-Service -Name $id -ErrorAction SilentlyContinue
+        if (-not $svc) { $ok = $false; Say "service $id is missing"; continue }
+        if ($svc.Status -ne 'Running') {
+            Say "service $id is $($svc.Status); starting it"
+            try { Start-Service -Name $id; Say "service $id started" } catch { $ok = $false; Say "starting $id failed: $($_.Exception.Message)" }
+        }
+    }
 }
 
 if ($ok) {

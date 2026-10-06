@@ -1,0 +1,52 @@
+name: golden-store-check
+# Checks the object store (golden/lib/store.sh) the way the golden jobs use it, on a small standard
+# runner: a streamed multipart upload from stdin with the golden jobs' settings (128 MiB parts, 64 in
+# flight, --expected-size of a full Max image), a head-object, a download back with sha256 compare,
+# and the part-count arithmetic for the largest image. The test object is deleted afterwards.
+on:
+  workflow_dispatch:
+    inputs:
+      gib: { description: "test stream size in GiB", default: "10" }
+permissions: { contents: read }
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      S3_ENDPOINT_URL: ${{ vars.S3_ENDPOINT_URL }}
+      STORE_BUCKET: ${{ vars.STORE_BUCKET || 'zero-golden-images-143795940981' }}
+      AWS_REGION: ${{ vars.STORE_REGION || 'us-east-1' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.STORE_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.STORE_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+      GIB: ${{ inputs.gib }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Store check
+        run: |
+          set -euo pipefail
+          . golden/lib/store.sh
+          store_tune
+          aws --version
+          echo "endpoint ${S3_ENDPOINT_URL:-aws}, bucket $STORE_BUCKET, region $AWS_REGION"
+          store s3 ls "$(store_uri '')" | head -n 20
+          # part arithmetic: aws-cli uses max(multipart_chunksize, ceil(expected_size / 10000))
+          python3 - <<'PY'
+          import math
+          chunk = 128 * 1024 * 1024
+          for name, size in [("max-windows (largest, raw)", 931_000_000_000), ("2 TB", 2_000_398_934_016)]:
+              part = max(chunk, math.ceil(size / 10000))
+              print("%-28s %15d B -> %5d parts of %d MiB" % (name, size, math.ceil(size / part), part // 2**20))
+          PY
+          KEY="checks/store-check-$GITHUB_RUN_ID.bin"
+          T0=$SECONDS
+          head -c "$((GIB * 1024 * 1024 * 1024))" /dev/urandom | tee >(sha256sum | awk '{print $1}' > up.sha256) \
+            | store s3 cp - "$(store_uri "$KEY")" --expected-size 931000000000 --only-show-errors
+          for _ in $(seq 1 60); do [ -s up.sha256 ] && break; sleep 1; done
+          T1=$SECONDS
+          echo "upload: ${GIB} GiB in $((T1 - T0)) s ($(( GIB * 1024 / (T1 - T0 + 1) )) MiB/s)"
+          store s3api head-object --bucket "$STORE_BUCKET" --key "$KEY" --query '{size: ContentLength, etag: ETag}' --output json
+          store s3 cp "$(store_uri "$KEY")" - --only-show-errors | sha256sum | awk '{print $1}' > down.sha256
+          echo "download: $((SECONDS - T1)) s"
+          echo "sha256 up   $(cat up.sha256)"; echo "sha256 down $(cat down.sha256)"
+          store s3 rm "$(store_uri "$KEY")" --only-show-errors
+          cmp -s up.sha256 down.sha256 && echo "STORE CHECK PASS" || { echo "::error::sha256 differs"; exit 1; }

@@ -36,7 +36,9 @@ Play on the laptop's hardware with the drivers in the driver store) and runs `wi
 C: grows to the end of the NVMe, the model files' ACLs are reset, a per-machine llama-server API key
 is made, and the Windows 11 Pro key from the laptop's firmware (OA3/MSDM) is installed (activation
 then happens online). The `\Zero\Zero golden first boot` startup task runs the same script again
-and removes itself. OOBE asks the owner for a local account; the model service and the chat are
+in full Windows: there it also moves the Windows Recovery Environment onto C: (Setup's Recovery
+partition sits right after C: and would block the extension: `reagentc /disable`, the partition is
+deleted, C: extended, `reagentc /enable`), makes sure both Zero services run, and removes itself. OOBE asks the owner for a local account; the model service and the chat are
 already running behind it. Why this and not a WIM:
 
 - it is what could be built and *verified end to end* here: the exact bytes that are uploaded are
@@ -63,12 +65,11 @@ golden/build-golden.sh --os windows --tiers '["max"]' --windows-tag windows-YYYY
 It runs from a checkout of `staccDOTsol/lecore-plus` (the source of truth) with `gh` logged in:
 
 1. `golden-stage` (workflow in lecore-plus) copies the newest `linux-*` image parts and `windows-*`
-   ISO parts into `s3://zero-golden-images-143795940981/base/{linux,windows}/<tag>/`, each part
-   sha256-checked. It assumes an IAM role through GitHub OIDC (main branch only, `base/` prefix only).
+   ISO parts into the object store, `base/{linux,windows}/<tag>/`, each part sha256-checked.
 2. It copies `golden/`, `provision/` and `models/` into the private build repo
    `kekloldyormarket/zero-golden` (the larger runners belong to that org) and pushes.
 3. It dispatches `golden-linux` and `golden-windows` there: one job per tier x OS on `zero-golden-32`
-   (96 cores, 384 GB, 2 TB SSD, KVM), all six in parallel.
+   (a larger runner with KVM and a 2 TB SSD), up to the runner's parallel limit.
 
 Each Linux job (`ci/golden-linux.yml`): every model of the tier from Hugging Face (aria2c, parallel,
 sha256 per file) → the base image → `provision/linux-add-models.sh --all <tier> --image` (grows the
@@ -114,18 +115,32 @@ CPU; check `Vulkan0` in the llama-server log on the first laptop of each model),
 with the laptop's firmware key (the VM has no OA3 key), Secure Boot for the Windows image (the VM
 boots without it), and loading the non-default models (size + sha256 only).
 
-## S3 layout
+## Object store
+
+The images go to a private bucket on any S3-compatible service; `lib/store.sh` wraps aws-cli
+(`--endpoint-url` when an endpoint is set). Configuration, on both `staccDOTsol/lecore-plus` (staging)
+and `kekloldyormarket/zero-golden` (builds):
+
+| | Kind | Example |
+|---|---|---|
+| `S3_ENDPOINT_URL` | repo variable | `https://fly.storage.tigris.dev` (Tigris); empty = AWS S3 |
+| `STORE_BUCKET` | repo variable | `zeroknows-golden` |
+| `STORE_REGION` | repo variable | `auto` (Tigris, R2); the region for AWS S3 / B2 |
+| `STORE_ACCESS_KEY_ID`, `STORE_SECRET_ACCESS_KEY` | repo secrets | the store's keys (AWS keys / OIDC role if absent) |
+
+`golden-store-check` (in zero-golden, small runner) tests a configuration: a streamed multipart upload
+with the golden jobs' settings, a download back with sha256 compare, and the part arithmetic (128 MiB
+parts; aws-cli raises the part size when `--expected-size` / 10,000 is larger, so even 2 TB stays
+under 10,000 parts).
 
 ```
-s3://zero-golden-images-143795940981/
+<bucket>/
   base/linux/<tag>/...           base/windows/<tag>/...        staged base releases
   linux/<linux tag>/zero-<tier>-linux.img.zst  .manifest.json  .verify.txt
   windows/<windows tag>/zero-<tier>-windows.img.zst  .manifest.json  .verify.txt
 ```
 
-The bucket is private (public access blocked, bucket-owner-enforced, SSE-S3), tagged
-`project=zero-images`; incomplete multipart uploads are aborted after 2 days. The manifest holds the
-raw size and sha256 (to check the written NVMe), the compressed size and sha256 (to check the
-download), the base release, the golden commit, the catalog version, the model list and the
-verification report. Downloads are by presigned URL, made on request. Each full download of an
-image leaves AWS and is billed as data transfer out (about $0.09/GB; a Max image ≈ $70).
+The manifest holds the raw size and sha256 (to check the written NVMe), the compressed size and
+sha256 (to check the download), the store endpoint and key, the base release, the golden commit, the
+catalog version, the model list and the verification report. Downloads are by presigned URL, made on
+request.

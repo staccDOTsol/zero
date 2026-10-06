@@ -23,9 +23,9 @@ cannot undo that.
 
 ## 1. Get the image and check it
 
-The golden images are in the private S3 bucket of the Zero team, under `linux/<base release>/`, next
-to their manifests and verification reports (see `golden/README.md`). The Zero team sends a download
-link (an S3 presigned URL) per file.
+The golden images are in the Zero team's private object-store bucket (S3-compatible), under
+`linux/<base release>/`, next to their manifests and verification reports (see `golden/README.md`).
+The Zero team sends a download link (a presigned URL) per file.
 
 ```sh
 curl -fLo zero-max-linux.img.zst '<presigned URL of the image>'

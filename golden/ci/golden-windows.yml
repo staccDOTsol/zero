@@ -2,12 +2,12 @@ name: golden-windows
 # Zero Windows golden images: one generalized (sysprep'd) full-disk image per tier with EVERY catalog
 # model of the tier inside, verified on its first boot in QEMU/KVM, streamed to the private bucket.
 # Source of truth: staccDOTsol/lecore-plus golden/ (golden/build-golden.sh copies it here).
-# The Windows ISO comes from s3://BUCKET/base/windows/<tag>/ (staged by lecore-plus's golden-stage
+# The Windows ISO comes from the object store, base/windows/<tag>/ (staged by lecore-plus's golden-stage
 # workflow: the ISOs exist only in that private repo).
 on:
   workflow_dispatch:
     inputs:
-      windows_tag: { description: "Windows base release tag (staged to s3://BUCKET/base/windows/<tag>/)", required: true }
+      windows_tag: { description: "Windows base release tag (staged to the object store, base/windows/<tag>/)", required: true }
       tiers: { description: "JSON list of tiers", default: '["pro","max","ultra"]' }
       upload: { description: "upload the image to S3", type: boolean, default: true }
 permissions: { contents: read }
@@ -19,10 +19,14 @@ jobs:
     runs-on: zero-golden-32
     timeout-minutes: 355
     env:
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      BUCKET: zero-golden-images-143795940981
+      # object store: any S3-compatible service (golden/lib/store.sh). Repo variables S3_ENDPOINT_URL
+      # (empty = AWS S3), STORE_BUCKET, STORE_REGION; secrets STORE_ACCESS_KEY_ID/STORE_SECRET_ACCESS_KEY
+      # (falling back to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY).
+      S3_ENDPOINT_URL: ${{ vars.S3_ENDPOINT_URL }}
+      STORE_BUCKET: ${{ vars.STORE_BUCKET || 'zero-golden-images-143795940981' }}
+      AWS_REGION: ${{ vars.STORE_REGION || 'us-east-1' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.STORE_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.STORE_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
       TIER: ${{ matrix.tier }}
       WIN_TAG: ${{ inputs.windows_tag }}
     steps:
@@ -43,11 +47,12 @@ jobs:
         run: |
           set -euo pipefail
           case "$TIER" in pro|max) T=hp-zbook-ultra-g1a ;; ultra) T=lenovo-p16-gen3 ;; esac
+          . "$GITHUB_WORKSPACE/golden/lib/store.sh"
           cd "$WORK"
-          aws s3 cp "s3://$BUCKET/base/windows/$WIN_TAG/SHA256SUMS-$T.txt" - --only-show-errors | tr -d '\r' > sums.txt
+          store s3 cp "$(store_uri "base/windows/$WIN_TAG/SHA256SUMS-$T.txt")" - --only-show-errors | tr -d '\r' > sums.txt
           ISO=$(awk '$2 ~ /\.iso$/ {print $2}' sums.txt)
           for p in $(awk '$2 ~ /\.iso\.part[0-9]+$/ {print $2}' sums.txt); do
-            aws s3 cp "s3://$BUCKET/base/windows/$WIN_TAG/$p" "$p" --only-show-errors
+            store s3 cp "$(store_uri "base/windows/$WIN_TAG/$p")" "$p" --only-show-errors
           done
           grep -E '\.part[0-9]+$' sums.txt | sha256sum -c -
           cat "$ISO".part* > "$ISO" && rm -f "$ISO".part*
@@ -57,7 +62,7 @@ jobs:
         run: |
           UP=--no-upload; [ "${{ inputs.upload }}" = true ] && UP=
           sudo -E golden/windows/build.sh --tier "$TIER" --iso "$ISO" --work "$WORK/w" \
-            --bucket "$BUCKET" --prefix "windows/$WIN_TAG" --base-tag "$WIN_TAG" $UP
+            --prefix "windows/$WIN_TAG" --base-tag "$WIN_TAG" $UP
       - name: Logs
         if: always()
         uses: actions/upload-artifact@v4
