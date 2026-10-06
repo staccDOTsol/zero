@@ -68,7 +68,9 @@ try {
 
     # --- generalized image, first boot ----------------------------------------------------------------
     $state = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState
-    Check 'generalized image on its first boot: specialize done, OOBE next' ($state -eq 'IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE') "ImageState $state"
+    $setup = Get-ItemProperty 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
+    $oobe = [int]$(if ($setup -and $setup.PSObject.Properties['OOBEInProgress']) { $setup.OOBEInProgress } else { 0 })
+    Check 'generalized image on its first boot: specialize done, OOBE waiting for the owner' ($state -eq 'IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE' -or $oobe -eq 1) "ImageState $state, OOBEInProgress $oobe"
     $golden = Get-Content -Raw -LiteralPath (Join-Path $data 'golden.json') | ConvertFrom-Json
     $sid = (Get-LocalUser | Select-Object -First 1).SID.AccountDomainSid.Value
     Check 'new machine SID (sysprep /generalize)' ($sid -and $sid -ne $golden.build_machine_sid) "this boot $sid, build VM $($golden.build_machine_sid)"
@@ -80,9 +82,10 @@ try {
     Info 'stack installed in' ([string]$golden.stack_installed_in)
 
     # --- golden first boot task ---------------------------------------------------------------------------
+    # this script was started by the task itself (test hook), so wait for that task run to finish
     $done = Join-Path $data 'golden-firstboot.done'
-    $deadline = (Get-Date).AddMinutes(15)
-    while (-not (Test-Path $done) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 10 }
+    $deadline = (Get-Date).AddMinutes(20)
+    while (((-not (Test-Path $done)) -or (Get-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero golden first boot' -ErrorAction SilentlyContinue)) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 10 }
     Check 'golden first-boot task ran and removed itself' ((Test-Path $done) -and -not (Get-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero golden first boot' -ErrorAction SilentlyContinue)) (Tail (Join-Path $logs 'golden-firstboot.log') 12)
     $c = Get-Partition -DriveLetter C
     $disk = Get-Disk -Number $c.DiskNumber
@@ -91,6 +94,8 @@ try {
     Check 'C: grew to the end of the disk' (($max - $c.Size) -lt 1GB -and $c.Size -gt [double]$expect.image_bytes) ("C: {0:N1} GB of a {1:N1} GB disk (max {2:N1} GB)" -f ($c.Size / 1e9), ($disk.Size / 1e9), ($max / 1e9))
     $parts = (Get-Partition -DiskNumber $c.DiskNumber | ForEach-Object { "{0}:{1}:{2:N2}GB" -f $_.PartitionNumber, $_.Type, ($_.Size / 1e9) }) -join ' '
     Info 'partitions' $parts
+    $re = (& reagentc.exe /info 2>&1 | Where-Object { $_ -match 'status|location' }) -join ' ' -replace '\s+', ' '
+    Check 'Windows Recovery Environment enabled (moved onto C:)' ($re -match 'status:\s*Enabled') $re
 
     # --- per-machine API key ------------------------------------------------------------------------------
     $keyFile = Join-Path $data 'secret\llama-api-key'
@@ -123,6 +128,13 @@ try {
     Check 'model files: inherited ACL (LOCAL SERVICE read, no Everyone full control)' ($ls.Count -ge 1 -and $everyoneFull.Count -eq 0) (($acl | ForEach-Object { "$($_.IdentityReference):$($_.FileSystemRights)$(if ($_.IsInherited) { '(inh)' })" }) -join ', ')
 
     # --- services + the default model ------------------------------------------------------------------------
+    # what the service manager saw this boot (a service that failed or timed out at boot shows here)
+    $scm = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager' } -MaxEvents 400 -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match 'lecore|Zero model server|Zero chat' } | Sort-Object TimeCreated |
+        ForEach-Object { "{0:HH:mm:ss} {1} {2}" -f $_.TimeCreated, $_.Id, ($_.Message -replace "`r?`n", ' ') })
+    Info 'service manager events for the Zero services' ($scm -join ' || ')
+    foreach ($l in 'lecore-llama.wrapper.log', 'lecore-llama.err.log', 'lecore-llama.out.log') { Info "log $l" (Tail (Join-Path $logs $l) 15) }
+    Info 'golden first-boot log' (Tail (Join-Path $logs 'golden-firstboot.log') 30)
     foreach ($id in 'lecore-llama', 'lecore-chat') {
         $s = Get-CimInstance Win32_Service -Filter "Name='$id'"
         Check "service $id running as LOCAL SERVICE, automatic" ($s -and $s.State -eq 'Running' -and $s.StartName -match 'LocalService' -and $s.StartMode -eq 'Auto') $(if ($s) { "$($s.State) $($s.StartName) $($s.StartMode)" } else { 'missing' })

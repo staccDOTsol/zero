@@ -61,13 +61,14 @@ duplicator). Nothing has to be assembled or added by hand. On the first boot:
   Windows 11 Pro key from its own firmware, grows C: to fill the NVMe, and shows OOBE for the owner's
   local account. The model service and the chat are already running.
 
-The images are built by `golden/build-golden.sh` (one command; see [`golden/README.md`](golden/README.md))
-on GitHub Actions runners with KVM. Every image is checked before it is uploaded: every model file is
-read back from the image and its sha256 compared with the catalog, then the image is booted for its
-first boot in QEMU/KVM on a drive the size of the laptop's NVMe, and the default model must answer
-on 127.0.0.1:8080, the chat must answer through it on 127.0.0.1:7860, and the zero-egress
-confinement must hold. The images are kept in a private S3 bucket with a manifest (sizes, sha256,
-base release tags, catalog version).
+The images are built by `golden/build-golden.sh` (one command; see
+[`golden/README.md`](golden/README.md)) on GitHub Actions runners with KVM. Every image is checked
+before it is uploaded: every model file is read back from the image and its sha256 compared with the
+catalog, then the image is booted for its first boot in QEMU/KVM on a drive the size of the laptop's
+NVMe, and the default model must answer on 127.0.0.1:8080, the chat must answer through it on
+127.0.0.1:7860, and the zero-egress confinement must hold. The images are kept in a private
+object-store bucket (S3-compatible) with a manifest (sizes, sha256, base release tags, catalog
+version).
 
 `provision/` (adding models to a disk or image by hand) is what the golden builds use for Linux and
 remains for service work, e.g. putting a different default on one laptop.

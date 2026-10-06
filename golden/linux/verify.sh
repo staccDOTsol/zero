@@ -74,6 +74,10 @@ boot() { # SMP MEM_G SECUREBOOT(0|1) -> 0 done, 1 failed, 2 the VM died before t
   local smp=$1 mem=$2 sb=$3 code machine extra=() rc=1 t0 pid
   rm -f "$OV" "$LOG" "$SOCK"
   golden_disk "$sb"
+  # its own hardware identity, as a new laptop has (a stock QEMU VM looks the same everywhere)
+  local uuid serial mac
+  uuid=$(cat /proc/sys/kernel/random/uuid); serial=$(od -An -tx1 -N6 /dev/urandom | tr -d ' \n')
+  mac="52:54:00:$(od -An -tx1 -N3 /dev/urandom | awk '{print $1":"$2":"$3}')"
   qemu-img create -q -f qcow2 -F raw -b "$IMG" "$OV" "$NVME"
   if [ "$sb" = 1 ]; then
     code=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd; cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$OUT/vars.fd"
@@ -86,9 +90,10 @@ boot() { # SMP MEM_G SECUREBOOT(0|1) -> 0 done, 1 failed, 2 the VM died before t
   say "$BOOTCFG"
   qemu-system-x86_64 -name zero-golden-linux -machine "$machine" -cpu host -smp "$smp" -m "${mem}G" "${extra[@]}" \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="$code" -drive if=pflash,format=raw,unit=1,file="$OUT/vars.fd" \
-    -drive file="$OV",if=none,id=d0,format=qcow2,cache=unsafe -device nvme,drive=d0,serial=ZEROGOLDEN0001 \
+    -drive file="$OV",if=none,id=d0,format=qcow2,cache=unsafe -device nvme,drive=d0,serial="ZT$serial" \
     -drive file="$OUT/golden-disk.img",if=virtio,format=raw,readonly=on \
-    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -device virtio-rng-pci -device virtio-vga -display none \
+    -uuid "$uuid" -smbios "type=1,manufacturer=Zero,product=Zero golden test VM,serial=ZEROTEST-$serial,uuid=$uuid" \
+    -netdev user,id=n0 -device virtio-net-pci,netdev=n0,mac="$mac" -device virtio-rng-pci -device virtio-vga -display none \
     -serial file:"$LOG" -qmp unix:"$SOCK",server=on,wait=off \
     -smbios "type=11,value=io.systemd.credential.binary:systemd.extra-unit.zero-golden-check.service=$UNIT" \
     -smbios "type=11,value=io.systemd.credential.binary:systemd.unit-dropin.graphical.target=$DROPIN" \

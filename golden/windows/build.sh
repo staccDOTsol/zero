@@ -17,7 +17,8 @@
 #               the image and sha256-checked against the catalog
 #   5. verify   a copy-on-write overlay the size of the laptop's NVMe, booted for its first boot;
 #               verify.ps1 (test only) checks the result (see that file)
-#   6. upload   raw sha256 + zstd stream to s3://BUCKET/PREFIX/zero-<tier>-windows.img.zst + manifest
+#   6. upload   raw sha256 + zstd stream to the object store (golden/lib/store.sh: any S3-compatible
+#               service, STORE_BUCKET / S3_ENDPOINT_URL), PREFIX/zero-<tier>-windows.img.zst + manifest
 #
 #   build.sh --tier pro|max|ultra --iso ZERO.iso --work DIR [--bucket B --prefix P] [--base-tag T]
 #            [--no-upload] [--keep]
@@ -25,13 +26,13 @@ set -Eeuo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 CATALOG=$REPO/models/catalog.json
-TIER="" ISO="" WORK="" BUCKET="" PREFIX="" BASE_TAG="" UPLOAD=1 KEEP=0
+TIER="" ISO="" WORK="" PREFIX="" BASE_TAG="" UPLOAD=1 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --tier) TIER=$2; shift 2 ;;
     --iso) ISO=$(readlink -f "$2"); shift 2 ;;
     --work) WORK=$2; shift 2 ;;
-    --bucket) BUCKET=$2; shift 2 ;;
+    --bucket) export STORE_BUCKET=$2; shift 2 ;;
     --prefix) PREFIX=$2; shift 2 ;;
     --base-tag) BASE_TAG=$2; shift 2 ;;
     --catalog) CATALOG=$(readlink -f "$2"); shift 2 ;;
@@ -44,7 +45,9 @@ case "$TIER" in pro|max) TARGET=hp-zbook-ultra-g1a; VENDOR='Advanced Micro Devic
                  ultra) TARGET=lenovo-p16-gen3; VENDOR='NVIDIA' ;;
                  *) echo "--tier pro|max|ultra" >&2; exit 2 ;; esac
 [ -f "$ISO" ] && [ -n "$WORK" ] || { echo "--iso and --work are required" >&2; exit 2; }
-[ "$UPLOAD" = 0 ] || [ -n "$BUCKET" ] || { echo "--bucket (or --no-upload)" >&2; exit 2; }
+[ "$UPLOAD" = 0 ] || [ -n "${STORE_BUCKET:-}" ] || { echo "STORE_BUCKET / --bucket (or --no-upload)" >&2; exit 2; }
+# shellcheck source=../lib/store.sh
+[ "$UPLOAD" = 0 ] || . "$REPO/golden/lib/store.sh"
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 mkdir -p "$WORK"; WORK=$(cd "$WORK" && pwd)
 LOGS=$WORK/logs; CACHE=$WORK/model-cache; MNT=$WORK/mnt
@@ -155,6 +158,14 @@ x("qmp_capabilities")
 print(json.dumps(x(cmd, args)))
 PY
 }
+# Every test VM gets its own random hardware identity (SMBIOS system UUID and serials, NIC MAC, disk
+# serial). A stock QEMU VM has the same identity everywhere, and Windows OOBE matched one to somebody
+# else's Windows Autopilot registration ("Let's set things up for your work or school").
+rand_hex() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n' | tr a-f A-F; }
+new_identity() { # sets VM_UUID VM_SERIAL VM_MAC VM_DISKSERIAL
+  VM_UUID=$(cat /proc/sys/kernel/random/uuid); VM_SERIAL="ZEROTEST-$(rand_hex 6)"
+  VM_MAC="52:54:00:$(od -An -tx1 -N3 /dev/urandom | awk '{print $1":"$2":"$3}')"; VM_DISKSERIAL="ZT$(rand_hex 8)"
+}
 # vm NAME TIMEOUT_S DONE_REGEX SMP MEM_G -- extra qemu args
 # (VM_START_RE / VM_START_TMO: give up early if the serial log never shows VM_START_RE)
 vm() {
@@ -168,6 +179,8 @@ vm() {
     -drive if=pflash,format=raw,unit=0,readonly=on,file="${VM_CODE:-$OVMF_CODE}" \
     -drive if=pflash,format=raw,unit=1,file="$VARS" \
     -rtc base=utc -vga std -display none -serial file:"$log" -qmp unix:"$sock",server=on,wait=off \
+    -uuid "$VM_UUID" -smbios "type=1,manufacturer=Zero,product=Zero golden test VM,serial=$VM_SERIAL,uuid=$VM_UUID" \
+    -smbios "type=2,manufacturer=Zero,serial=$VM_SERIAL" -smbios "type=3,manufacturer=Zero,serial=$VM_SERIAL" \
     -device qemu-xhci -device usb-tablet "$@" &
   local pid=$! t0=$SECONDS next=300 shot=0 t
   while kill -0 "$pid" 2>/dev/null; do
@@ -208,7 +221,8 @@ detach() { sync; mountpoint -q "$MNT" && umount "$MNT"; [ -n "$LOOP" ] && losetu
 
 # ---------------------------------------------------------------------------------------------------
 # 3. Windows Setup -> audit mode -> sysprep, in a VM whose only disk is the image
-DISKDEV=(-drive if=none,id=d0,file="$DISK",format=raw,cache=unsafe,discard=unmap,detect-zeroes=unmap -device nvme,drive=d0,serial=ZEROGOLDEN0001,bootindex=1)
+new_identity   # the build VM's identity (the image is generalized afterwards anyway)
+DISKDEV=(-drive if=none,id=d0,file="$DISK",format=raw,cache=unsafe,discard=unmap,detect-zeroes=unmap -device nvme,drive=d0,serial="$VM_DISKSERIAL",bootindex=1)
 setup_pe() { # A|B: Windows Setup's windowsPE pass (partitions the disk, applies Windows, reboots)
   local m=$1 media
   rm -f "$DISK"; truncate -s "$DISK_BYTES" "$DISK"; cp "$OVMF_VARS" "$VARS"
@@ -360,6 +374,7 @@ fi
 # laptops ship; if that VM dies before the check starts, once more with Secure Boot off.
 vboot() { # name secureboot(0|1)
   overlay
+  new_identity   # a "new laptop"
   if [ "$2" = 1 ]; then
     cp /usr/share/OVMF/OVMF_VARS_4M.ms.fd "$VARS"
     export VM_CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd VM_MACHINE=q35,accel=kvm,smm=on VM_EXTRA="-global driver=cfi.pflash01,property=secure,value=on"
@@ -367,8 +382,8 @@ vboot() { # name secureboot(0|1)
     cp "$OVMF_VARS" "$VARS"; unset VM_CODE VM_MACHINE VM_EXTRA
   fi
   VM_START_RE=ZERO_VERIFY_STARTED VM_START_TMO=$((1500 * TS)) vm "$1" $((5400 * TS)) 'ZERO_VERIFY_DONE' "$VERIFY_SMP" "$VERIFY_MEM" -- \
-    -drive if=none,id=d0,file="$OV",format=qcow2,cache=unsafe,discard=unmap -device nvme,drive=d0,serial=ZEROVERIFY0001 \
-    -nic user,model=e1000e
+    -drive if=none,id=d0,file="$OV",format=qcow2,cache=unsafe,discard=unmap -device nvme,drive=d0,serial="$VM_DISKSERIAL" \
+    -nic user,model=e1000e,mac="$VM_MAC"
 }
 VSB=1; T1=$SECONDS
 vboot verify 1 || VERIFY=FAIL
@@ -381,6 +396,22 @@ unset VM_CODE VM_MACHINE VM_EXTRA
 echo "first boot: QEMU/KVM + OVMF, ${NVME_BYTES}-byte NVMe, Secure Boot $([ "$VSB" = 1 ] && echo on || echo off), $VERIFY_SMP vCPU / $VERIFY_MEM GiB, user-mode network" > "$LOGS/verify-boot.txt"
 { grep -aE '^(VERIFY OK|VERIFY FAILED)' "$LOGS/models-sha256.txt"; cat "$LOGS/verify-boot.txt"; tr -d '\r' < "$LOGS/verify-serial.log" | grep -aE '^(VERIFY|ZERO_VERIFY)'; } | tee "$LOGS/verify-report.txt" || true
 grep -aq 'ZERO_VERIFY_RESULT: PASS' "$LOGS/verify-serial.log" || VERIFY=FAIL
+# the guest's own logs out of the overlay (read-only): service logs, first-boot log, Setup logs, events
+G=$LOGS/verify-guest; mkdir -p "$G"
+if [ -e /dev/nbd0 ] && qemu-nbd -r -c /dev/nbd0 "$OV" 2>/dev/null; then
+  udevadm settle 2>/dev/null || sleep 2; partprobe /dev/nbd0 2>/dev/null || true; sleep 2
+  if ntfs-3g -o ro "$(ntfs_part /dev/nbd0)" "$MNT" 2>/dev/null; then
+    cp -r "$MNT/ProgramData/leCore+/logs" "$G/lecore-logs" 2>/dev/null || true
+    cp "$MNT/zero-verify/verify.log" "$MNT/zero-verify/report.txt" "$G/" 2>/dev/null || true
+    cp "$MNT"/Windows/Setup/Scripts/*.log "$G/" 2>/dev/null || true
+    cp "$MNT/Windows/Panther/setupact.log" "$G/panther-setupact.log" 2>/dev/null || true
+    cp "$MNT/Windows/Panther/UnattendGC/setupact.log" "$G/unattendgc-setupact.log" 2>/dev/null || true
+    cp "$MNT/Windows/System32/winevt/Logs/System.evtx" "$MNT/Windows/System32/winevt/Logs/Application.evtx" "$G/" 2>/dev/null || true
+    umount "$MNT"
+  fi
+  qemu-nbd -d /dev/nbd0 >/dev/null
+fi
+say "guest logs: $(find "$G" -type f | wc -l) files in logs/verify-guest"
 rm -f "$OV"
 say "first-boot verification: $VERIFY"
 
@@ -390,12 +421,11 @@ say "first-boot verification: $VERIFY"
 if [ "$UPLOAD" = 1 ]; then
   P=${PREFIX%/}
   KEY=$P/zero-$TIER-windows.img.zst
-  say "streaming to s3://$BUCKET/$KEY (raw sha256 + zstd)"
-  aws configure set default.s3.max_concurrent_requests 64
-  aws configure set default.s3.multipart_chunksize 128MB
+  say "streaming to $(store_uri "$KEY") ${S3_ENDPOINT_URL:+at $S3_ENDPOINT_URL }(raw sha256 + zstd)"
+  store_tune
   tee >(sha256sum | awk '{print $1}' > "$WORK/raw.sha256") < "$DISK" | zstd -T0 -3 -c \
     | tee >(sha256sum | awk '{print $1}' > "$WORK/zst.sha256") >(wc -c > "$WORK/zst.bytes") \
-    | aws s3 cp - "s3://$BUCKET/$KEY" --expected-size "$DISK_BYTES" --only-show-errors
+    | store s3 cp - "$(store_uri "$KEY")" --expected-size "$DISK_BYTES" --only-show-errors
   for _ in $(seq 1 300); do [ -s "$WORK/raw.sha256" ] && [ -s "$WORK/zst.sha256" ] && [ -s "$WORK/zst.bytes" ] && break; sleep 1; done
   python3 - "$WORK/manifest.json" <<PY
 import json, sys
@@ -403,14 +433,15 @@ m = {"product": "Zero", "os": "windows", "tier": "$TIER", "laptop": "$TARGET",
      "format": "raw GPT disk image, zstd-compressed; write with: zstd -dc FILE | dd of=/dev/nvme0n1 bs=16M oflag=direct",
      "raw_bytes": $DISK_BYTES, "raw_sha256": open("$WORK/raw.sha256").read().strip(),
      "zst_bytes": int(open("$WORK/zst.bytes").read().strip()), "zst_sha256": open("$WORK/zst.sha256").read().strip(),
-     "s3": "s3://$BUCKET/$KEY", "base_release": "${BASE_TAG:-}", "golden_commit": "${GITHUB_SHA:-}",
+     "s3": "$(store_uri "$KEY")", "endpoint": "${S3_ENDPOINT_URL:-aws}", "base_release": "${BASE_TAG:-}", "golden_commit": "${GITHUB_SHA:-}",
      "catalog": json.loads('''$SUMMARY'''), "laptop_nvme_bytes": $NVME_BYTES,
      "verification": "$VERIFY", "verification_report": open("$LOGS/verify-report.txt").read().splitlines(),
      "model_sha256_check": open("$LOGS/models-sha256.txt").read().splitlines()[-1]}
 json.dump(m, open(sys.argv[1], "w"), indent=1)
 PY
-  aws s3 cp "$WORK/manifest.json" "s3://$BUCKET/$P/zero-$TIER-windows.manifest.json" --only-show-errors
-  aws s3 cp "$LOGS/verify-report.txt" "s3://$BUCKET/$P/zero-$TIER-windows.verify.txt" --only-show-errors
+  store s3 cp "$WORK/manifest.json" "$(store_uri "$P/zero-$TIER-windows.manifest.json")" --only-show-errors
+  store s3 cp "$LOGS/verify-report.txt" "$(store_uri "$P/zero-$TIER-windows.verify.txt")" --only-show-errors
+  store s3 ls "$(store_uri "$P/")" --human-readable
   cat "$WORK/manifest.json"
 fi
 [ "$KEEP" = 1 ] || rm -f "$DISK"

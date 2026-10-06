@@ -6,21 +6,22 @@
 #
 # Runs from a checkout of staccDOTsol/lecore-plus (the source of truth) with `gh` logged in to an
 # account that can run workflows in staccDOTsol/lecore-plus and kekloldyormarket/zero-golden.
-#   1. picks the newest base releases (or the tags given): linux-* from the public mirror
-#      staccDOTsol/zero, windows-* from staccDOTsol/lecore-plus
-#   2. stages the Windows ISOs into the private bucket (lecore-plus workflow golden-stage, OIDC role)
+#   1. picks the newest base releases of staccDOTsol/lecore-plus (or the tags given)
+#   2. stages them into the private object store (lecore-plus workflow golden-stage)
 #   3. copies golden/, provision/ and models/ of this checkout's HEAD into kekloldyormarket/zero-golden
 #      (golden/ci/golden-*.yml -> .github/workflows/) and pushes
 #   4. dispatches golden-linux and golden-windows there: one job per tier x OS on the zero-golden-32
 #      runners (96 cores, 2 TB, KVM), in parallel. Each job downloads every model of its tier, builds
 #      the image, re-reads every model's sha256 from it, boots it for its first boot in QEMU/KVM
 #      (default model served and answering, chat answering through it, zero-egress confinement), and
-#      streams it to s3://zero-golden-images-143795940981/{linux,windows}/<base tag>/ with a manifest.
+#      streams it with a manifest to the object store, {linux,windows}/<base tag>/ in the bucket.
+#      The store is any S3-compatible service, set by repo variables S3_ENDPOINT_URL (empty = AWS S3),
+#      STORE_BUCKET, STORE_REGION and secrets STORE_ACCESS_KEY_ID / STORE_SECRET_ACCESS_KEY on both
+#      repos (golden/lib/store.sh). golden-store-check tests it.
 set -Eeuo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SRC=$(cd "$HERE/.." && pwd)
 SOURCE_REPO=staccDOTsol/lecore-plus
-MIRROR_REPO=staccDOTsol/zero
 BUILD_REPO=kekloldyormarket/zero-golden
 LINUX_TAG="" WINDOWS_TAG="" TIERS='["pro","max","ultra"]' OS=both UPLOAD=true WAIT=0
 while [ $# -gt 0 ]; do
@@ -45,17 +46,19 @@ latest_run() { # repo workflow
 [ -z "$(git -C "$SRC" status --porcelain -- golden provision models)" ] || { echo "commit golden/, provision/, models/ first" >&2; exit 1; }
 SHA=$(git -C "$SRC" rev-parse HEAD)
 
+WIN_STAGE=none LIN_STAGE=none
 if [ "$OS" != windows ]; then
-  [ -n "$LINUX_TAG" ] || LINUX_TAG=$(newest "$MIRROR_REPO" linux-)
-  echo "Linux base:   $MIRROR_REPO $LINUX_TAG"
+  [ -n "$LINUX_TAG" ] || LINUX_TAG=$(newest "$SOURCE_REPO" linux-)
+  echo "Linux base:   $SOURCE_REPO $LINUX_TAG"; LIN_STAGE=$LINUX_TAG
 fi
 if [ "$OS" != linux ]; then
   [ -n "$WINDOWS_TAG" ] || WINDOWS_TAG=$(newest "$SOURCE_REPO" windows-)
-  echo "Windows base: $SOURCE_REPO $WINDOWS_TAG"
-  gh workflow run golden-stage.yml -R "$SOURCE_REPO" -f windows_tag="$WINDOWS_TAG"
-  RUN=$(latest_run "$SOURCE_REPO" golden-stage.yml); echo "staging the ISOs: $RUN"
-  gh run watch -R "$SOURCE_REPO" "${RUN##*/}" --exit-status >/dev/null
+  echo "Windows base: $SOURCE_REPO $WINDOWS_TAG"; WIN_STAGE=$WINDOWS_TAG
 fi
+# the bases into the object store (sha256-checked; parts already there are skipped)
+gh workflow run golden-stage.yml -R "$SOURCE_REPO" -f windows_tag="$WIN_STAGE" -f linux_tag="$LIN_STAGE"
+RUN=$(latest_run "$SOURCE_REPO" golden-stage.yml); echo "staging the bases: $RUN"
+gh run watch -R "$SOURCE_REPO" "${RUN##*/}" --exit-status >/dev/null
 
 echo "syncing $BUILD_REPO from $SOURCE_REPO@${SHA:0:7}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
@@ -63,13 +66,13 @@ gh repo clone "$BUILD_REPO" "$TMP/b" -- -q
 rm -rf "$TMP/b/golden" "$TMP/b/provision" "$TMP/b/models"
 mkdir -p "$TMP/b/.github/workflows"
 cp -R "$SRC/golden" "$SRC/provision" "$SRC/models" "$TMP/b/"
-cp "$SRC/golden/ci/golden-linux.yml" "$SRC/golden/ci/golden-windows.yml" "$TMP/b/.github/workflows/"
+cp "$SRC/golden/ci/golden-linux.yml" "$SRC/golden/ci/golden-windows.yml" "$SRC/golden/ci/golden-store-check.yml" "$TMP/b/.github/workflows/"
 git -C "$TMP/b" add -A
 git -C "$TMP/b" diff --cached --quiet || git -C "$TMP/b" commit -q -m "sync golden build from $SOURCE_REPO@${SHA:0:7}"
 git -C "$TMP/b" push -q origin HEAD
 
 if [ "$OS" != windows ]; then
-  gh workflow run golden-linux.yml -R "$BUILD_REPO" -f base_repo="$MIRROR_REPO" -f base_tag="$LINUX_TAG" -f tiers="$TIERS" -f upload="$UPLOAD"
+  gh workflow run golden-linux.yml -R "$BUILD_REPO" -f base_repo=store -f base_tag="$LINUX_TAG" -f tiers="$TIERS" -f upload="$UPLOAD"
   echo "golden-linux:   $(latest_run "$BUILD_REPO" golden-linux.yml)"
 fi
 if [ "$OS" != linux ]; then
@@ -82,4 +85,4 @@ if [ "$WAIT" = 1 ]; then
     [ -n "$id" ] && gh run watch -R "$BUILD_REPO" "$id" || true
   done
 fi
-echo "images + manifests: s3://zero-golden-images-143795940981/{linux/$LINUX_TAG,windows/$WINDOWS_TAG}/"
+echo "images + manifests: {linux/$LINUX_TAG,windows/$WINDOWS_TAG}/ in $(gh variable get STORE_BUCKET -R "$BUILD_REPO" 2>/dev/null || echo the store bucket)"

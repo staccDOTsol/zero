@@ -1,12 +1,13 @@
 name: golden-linux
 # Full-disk Zero Linux image per tier: the base image + EVERY catalog model for that tier, written in
-# and sha256-checked, verified on its first boot in QEMU/KVM, then streamed to private S3. A
+# and sha256-checked, verified on its first boot in QEMU/KVM, then streamed to the private object store
+# (any S3-compatible service; see the env block and golden/lib/store.sh). A
 # distributor writes the raw image straight onto the laptop NVMe; it boots with every model there.
 # Source of truth: staccDOTsol/lecore-plus golden/ (golden/build-golden.sh copies it here).
 on:
   workflow_dispatch:
     inputs:
-      base_repo: { description: "'s3' (staged from staccDOTsol/lecore-plus by its golden-stage workflow) or a public repo holding the base Linux release", default: "s3" }
+      base_repo: { description: "'store' (staged from staccDOTsol/lecore-plus into the object store by its golden-stage workflow) or a public repo holding the base Linux release", default: "store" }
       base_tag: { description: "base Linux release tag", required: true }
       tiers: { description: "JSON list of tiers", default: '["pro","max","ultra"]' }
       upload: { description: "upload the image to S3", type: boolean, default: true }
@@ -19,10 +20,14 @@ jobs:
     runs-on: zero-golden-32
     timeout-minutes: 355
     env:
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      BUCKET: zero-golden-images-143795940981
+      # object store: any S3-compatible service (golden/lib/store.sh). Repo variables S3_ENDPOINT_URL
+      # (empty = AWS S3), STORE_BUCKET, STORE_REGION; secrets STORE_ACCESS_KEY_ID/STORE_SECRET_ACCESS_KEY
+      # (falling back to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY).
+      S3_ENDPOINT_URL: ${{ vars.S3_ENDPOINT_URL }}
+      STORE_BUCKET: ${{ vars.STORE_BUCKET || 'zero-golden-images-143795940981' }}
+      AWS_REGION: ${{ vars.STORE_REGION || 'us-east-1' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.STORE_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.STORE_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
       TIER: ${{ matrix.tier }}
       BASE_REPO: ${{ inputs.base_repo }}
       BASE_TAG: ${{ inputs.base_tag }}
@@ -45,8 +50,9 @@ jobs:
         working-directory: ${{ env.WORK }}
         run: |
           set -euo pipefail
-          if [ "$BASE_REPO" = s3 ]; then
-            aws s3 cp "s3://$BUCKET/base/linux/$BASE_TAG/" . --recursive --exclude '*' --include 'zero-*.img.zst.part*' --include SHA256SUMS --only-show-errors
+          . "$GITHUB_WORKSPACE/golden/lib/store.sh"
+          if [ "$BASE_REPO" = store ] || [ "$BASE_REPO" = s3 ]; then
+            store s3 cp "$(store_uri "base/linux/$BASE_TAG/")" . --recursive --exclude '*' --include 'zero-*.img.zst.part*' --include SHA256SUMS --only-show-errors
           else
             curl -fsSL -o SHA256SUMS "https://github.com/$BASE_REPO/releases/download/$BASE_TAG/SHA256SUMS"
             for u in $(gh release view "$BASE_TAG" -R "$BASE_REPO" --json assets -q '.assets[].url' | grep -E '\.img\.zst\.part[0-9]+$'); do curl -fsSL -O "$u"; done
@@ -111,15 +117,15 @@ jobs:
         working-directory: ${{ env.WORK }}
         run: |
           set -euo pipefail
+          . "$GITHUB_WORKSPACE/golden/lib/store.sh"
           P="linux/$BASE_TAG"; V=PASS
           KEY="$P/zero-$TIER-linux.img.zst"
           SIZE=$(stat -c%s zero.img)
-          SRCREPO=$BASE_REPO; [ "$BASE_REPO" = s3 ] && SRCREPO=staccDOTsol/lecore-plus
-          aws configure set default.s3.max_concurrent_requests 64
-          aws configure set default.s3.multipart_chunksize 128MB
+          SRCREPO=$BASE_REPO; case "$BASE_REPO" in store|s3) SRCREPO=staccDOTsol/lecore-plus ;; esac
+          store_tune
           tee >(sha256sum | awk '{print $1}' > raw.sha256) < zero.img | zstd -T0 -3 -c \
             | tee >(sha256sum | awk '{print $1}' > zst.sha256) >(wc -c > zst.bytes) \
-            | aws s3 cp - "s3://$BUCKET/$KEY" --expected-size "$SIZE" --only-show-errors
+            | store s3 cp - "$(store_uri "$KEY")" --expected-size "$SIZE" --only-show-errors
           for _ in $(seq 1 300); do [ -s raw.sha256 ] && [ -s zst.sha256 ] && [ -s zst.bytes ] && break; sleep 1; done
           python3 - <<PY | tee manifest.json
           import json, subprocess
@@ -128,13 +134,13 @@ jobs:
               "format": "raw GPT disk image, zstd-compressed; write with: zstd -dc FILE | dd of=/dev/nvme0n1 bs=16M oflag=direct",
               "raw_bytes": $SIZE, "raw_sha256": open("raw.sha256").read().strip(),
               "zst_bytes": int(open("zst.bytes").read()), "zst_sha256": open("zst.sha256").read().strip(),
-              "s3": "s3://$BUCKET/$KEY", "base_release": "$SRCREPO/$BASE_TAG", "golden_commit": "$GITHUB_SHA",
+              "s3": "$(store_uri "$KEY")", "endpoint": "${S3_ENDPOINT_URL:-aws}", "base_release": "$SRCREPO/$BASE_TAG", "golden_commit": "$GITHUB_SHA",
               "catalog": s, "verification": "$V",
               "verification_report": open("verify/verify-report.txt").read().splitlines()}, indent=1))
           PY
-          aws s3 cp manifest.json "s3://$BUCKET/$P/zero-$TIER-linux.manifest.json" --only-show-errors
-          aws s3 cp verify/verify-report.txt "s3://$BUCKET/$P/zero-$TIER-linux.verify.txt" --only-show-errors
-          aws s3 ls "s3://$BUCKET/$P/" --human-readable
+          store s3 cp manifest.json "$(store_uri "$P/zero-$TIER-linux.manifest.json")" --only-show-errors
+          store s3 cp verify/verify-report.txt "$(store_uri "$P/zero-$TIER-linux.verify.txt")" --only-show-errors
+          store s3 ls "$(store_uri "$P/")" --human-readable
       - name: Logs
         if: always()
         uses: actions/upload-artifact@v4
