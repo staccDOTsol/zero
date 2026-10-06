@@ -37,8 +37,11 @@ This repo contains Microsoft's Windows installer. It is only for imaging license
   - Both the OEM pack's GPU driver and the vendor's current GPU driver are in the driver store. Both
     list the laptop's exact PCI subsystem ID, so Windows picks the newer one: AMD 32.0.31041.1004
     (Adrenalin 26.8.1) over HP's 32.0.22018.5; NVIDIA 32.0.15.9716 (597.16, `nvltwi.inf`) over
-    Lenovo's 32.0.15.9658. Only the NVIDIA INF for this GPU is injected (the package's other 19 OEM
-    INFs would each add a 1.3 GB copy to the driver store). Both GPU drivers install the Vulkan loader.
+    Lenovo's 32.0.15.9658. Of NVIDIA's 20 display INFs only the 3 that list this GPU (DEV_2C38:
+    `nvltwi.inf` for Lenovo, plus the HP and Dell variants) are injected; each one adds a ~1.3 GB copy
+    to the driver store. The NVIDIA package ships the Vulkan loader; HP's AMD INF registers the Vulkan
+    ICD. Check Vulkan on the first laptop of each model:
+    `& 'C:\Program Files\leCore+\llama\llama-server.exe' --list-devices` must list `Vulkan0`.
 - **Privacy toggles and the registry part of the model containment pre-applied to the image**
   (`lockdown.ps1 -OfflineImage`); the per-program firewall rules are added when the stack is installed.
 - **The stack installer** under `C:\Windows\Setup\Scripts\lecore-plus\`, run by `autounattend.xml`

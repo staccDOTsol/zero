@@ -290,7 +290,7 @@ jobs:
               for d in b["drivers"]:
                   print(f"- {d['vendor']}: {d['name']} {d['version']} (sha256 `{d['sha256']}`)")
               print(f"- Display drivers in the image: {'; '.join(b['display_drivers_in_image'])}\n")
-          print("## Stack\n\n`lecore-plus-windows-stack.zip`: llama.cpp b11430 Vulkan, leCore 21abb4f, Python 3.13.16 embeddable, offline wheelhouse, zero-egress lockdown. See windows/README.md.\n")
+          print("## Stack\n\n`lecore-plus-windows-stack.zip`: llama.cpp b11430 Vulkan, leCore 21abb4f, Python 3.13.16 embeddable, offline wheelhouse, model containment (lockdown.ps1). See windows/README.md.\n")
           print(f"Built by {run}")
           PY
           cat notes.md
