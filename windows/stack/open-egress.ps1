@@ -27,7 +27,8 @@ foreach ($n in 'Zero model containment check', 'Zero zero-egress check') {
     $task = Get-ScheduledTask -TaskPath '\Zero\' -TaskName $n -ErrorAction SilentlyContinue
     if ($task) { Disable-ScheduledTask -InputObject $task | Out-Null; Write-Host "disabled task \Zero\$n" }
 }
-$rules = @(Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue)
+$rules = @(@(Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue) +
+           @(Get-NetFirewallRule -DisplayName 'Zero: * stays on this machine (*)' -ErrorAction SilentlyContinue) | Sort-Object Name -Unique)
 $rules | Remove-NetFirewallRule
 Write-Host "removed $($rules.Count) containment rule(s). llama-server and leCore can now reach the network."
 Write-Host 'Run lockdown.ps1 to contain them again.'
