@@ -78,6 +78,15 @@ foreach ($pkg in $cfg.packages) {
         if (-not $injectRoots) { throw "none of $($pkg.inject_dirs -join ', ') found in $($pkg.id)" }
     }
     $infs = @($injectRoots | ForEach-Object { Get-ChildItem -Recurse -File -Path $_ -Filter *.inf } | ForEach-Object { Read-Inf $_.FullName })
+    if ($pkg.PSObject.Properties['display_only_matching_gpu'] -and $pkg.display_only_matching_gpu) {
+        $gpuRx = '(' + (($cfg.gpu_device_ids | ForEach-Object { 'PCI\\' + [regex]::Escape($_) }) -join '|') + ')'
+        $keep = @($infs | Where-Object { $_.Class -ne 'Display' -or $_.Text -match $gpuRx })
+        $drop = @($infs | Where-Object { $_.Class -eq 'Display' -and $_.Text -notmatch $gpuRx })
+        Write-Host ("  display INFs for other GPUs/OEMs left out: {0}" -f (($drop | ForEach-Object { Split-Path -Leaf $_.Path }) -join ' '))
+        if (-not @($keep | Where-Object { $_.Class -eq 'Display' }).Count) { throw "no display INF in $($pkg.id) matches $($cfg.gpu_device_ids -join ', ')" }
+        $infs = $keep
+        $injectRoots = @($keep | ForEach-Object { $_.Path })
+    }
     $classes = $infs | Group-Object Class | Sort-Object Count -Descending | ForEach-Object { "$($_.Name)=$($_.Count)" }
     Write-Host ("  INFs to inject: {0} ({1})" -f $infs.Count, ($classes -join ', '))
     $allInfs += @($infs | ForEach-Object { $_ | Add-Member -NotePropertyName Package -NotePropertyValue $pkg.id -PassThru })

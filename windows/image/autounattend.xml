@@ -6,7 +6,7 @@
               wipes a disk on its own (see windows/README.md, "Unattended disk layout", to opt in).
               No product key: the laptop's firmware (OA3/MSDM) key selects and licenses Windows 11 Pro.
   specialize  1. BypassNRO = 1: OOBE can finish with no network ("I don't have internet").
-              2. Installs the Zero stack and applies the zero-egress lockdown (install.ps1). This runs
+              2. Installs the Zero stack and applies the model containment (install.ps1). This runs
                  here, not only in SetupComplete.cmd, because Windows disables SetupComplete.cmd when
                  an OEM product key is used; RunSynchronous in specialize works with OEM keys.
   oobeSystem  Local account created by the owner at OOBE (no Microsoft account screens), no Wi-Fi
@@ -44,7 +44,7 @@
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
           <Order>2</Order>
-          <Description>Install the Zero stack (leCore+) and apply the zero-egress lockdown</Description>
+          <Description>Install the Zero stack (leCore+) and apply the model containment</Description>
           <Path>cmd.exe /c "%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File %WINDIR%\Setup\Scripts\lecore-plus\install.ps1 -NoStart -Phase specialize &gt; %WINDIR%\Setup\Scripts\lecore-plus-specialize.log 2&gt;&amp;1"</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
@@ -54,12 +54,6 @@
         <Manufacturer>Zero</Manufacturer>
         <Model>@OEM_MODEL@</Model>
       </OEMInformation>
-    </component>
-    <component name="Microsoft-Windows-SQMApi" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <CEIPEnabled>0</CEIPEnabled>
-    </component>
-    <component name="Microsoft-Windows-ErrorReportingCore" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <DisableWER>1</DisableWER>
     </component>
   </settings>
   <settings pass="oobeSystem">

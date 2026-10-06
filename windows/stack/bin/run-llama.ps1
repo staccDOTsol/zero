@@ -4,6 +4,7 @@
   Reads C:\ProgramData\leCore+\model.txt (one line: a file name in C:\ProgramData\leCore+\models\,
   or an absolute path) and runs:
       llama-server.exe --host 127.0.0.1 --port 8080 -ngl 999 -m <model>
+                       --alias <name> --offline --no-webui --cors-origins localhost
   plus any extra arguments listed one per line in C:\ProgramData\leCore+\llama-args.txt.
 
   No model configured -> a clean no-op: nothing listens on 127.0.0.1:8080, the chat runs memory-only,
@@ -48,7 +49,11 @@ while ($true) {
         $extra = @(Get-Content -LiteralPath $argsFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
     }
     $alias = [IO.Path]::GetFileNameWithoutExtension($m.Path)
-    $cmd = @('--host', '127.0.0.1', '--port', '8080', '-ngl', '999', '-m', $m.Path, '--alias', $alias) + $extra
+    # --offline: llama.cpp never downloads anything; --no-webui: no built-in web UI (Zero's UI is the chat on
+    # :7860); --cors-origins localhost: a web page from anywhere else cannot read the model's answers.
+    # The firewall blocks llama-server.exe from every non-loopback address on top of this.
+    $cmd = @('--host', '127.0.0.1', '--port', '8080', '-ngl', '999', '-m', $m.Path, '--alias', $alias,
+             '--offline', '--no-webui', '--cors-origins', 'localhost') + $extra
     Say ("starting: `"$server`" " + ($cmd -join ' '))
     # llama-server logs to stderr; fold it into stdout as plain text so Windows PowerShell never turns a log
     # line into a terminating NativeCommandError (WinSW writes the output to C:\ProgramData\leCore+\logs).

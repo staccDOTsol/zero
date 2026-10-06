@@ -5,7 +5,7 @@ rem Microsoft disables SetupComplete.cmd when Windows is installed with an OEM p
 rem laptops have one in firmware), so the image's autounattend.xml runs the same installer in the
 rem specialize pass, which works with OEM keys. This file covers installs without an OEM key and
 rem imaging partners who use it in their own task sequence. install.ps1 is idempotent: when the stack
-rem is already installed it only re-applies the lockdown.
+rem is already installed it only re-applies the model containment.
 setlocal
 set "LOG=%WINDIR%\Setup\Scripts\lecore-plus-setupcomplete.log"
 set "SRC=%WINDIR%\Setup\Scripts\lecore-plus"

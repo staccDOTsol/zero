@@ -2,7 +2,8 @@
 .SYNOPSIS
   Installs the Zero stack (leCore+): llama.cpp's llama-server (Vulkan) on 127.0.0.1:8080 and the
   leCore chat on 127.0.0.1:7860, as two Windows services, plus the "Zero" Start-menu and sign-in
-  app window. Then applies the zero-egress lockdown (lockdown.ps1) unless -SkipLockdown.
+  app window. Then applies the Zero model containment (lockdown.ps1: llama-server and leCore's
+  Python can reach only 127.0.0.1; Windows itself networks normally) unless -SkipLockdown.
 
 .DESCRIPTION
   Everything comes from .\payload next to this script; nothing is downloaded. Safe to run again:
@@ -15,7 +16,7 @@
   Windows PowerShell 5.1 compatible (runs during Windows Setup).
 
 .PARAMETER SkipLockdown
-  Test mode: install and start everything but never touch firewall/update/telemetry settings.
+  Test mode: install and start everything but do not run lockdown.ps1.
 .PARAMETER TestMode
   CI: additionally run the chat service with the in-process egress guard
   (LECORE_PLUS_EGRESS_GUARD=1), which logs and refuses any non-loopback connection.
@@ -325,7 +326,7 @@ try {
     if ($SkipLockdown) {
         Say 'lockdown SKIPPED (-SkipLockdown)'
     } else {
-        Say 'applying the zero-egress lockdown'
+        Say 'applying the Zero model containment (lockdown.ps1)'
         & (Join-Path $Src 'lockdown.ps1') -InstallBootTask
     }
     Say 'done'

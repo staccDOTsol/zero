@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Builds lecore-plus-windows-stack.zip: the Zero (leCore+) stack installer, the zero-egress lockdown,
+  Builds lecore-plus-windows-stack.zip: the Zero (leCore+) stack installer, the model containment (lockdown.ps1),
   and an offline payload (llama.cpp Vulkan build, Python embeddable, a wheelhouse, leCore at the pinned
   commit, NLTK data, WinSW). Runs on the CI runner. Nothing in the zip downloads anything on the laptop.
 #>

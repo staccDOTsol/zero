@@ -154,6 +154,37 @@ def main():
 
     chat_server.APP.add_url_rule("/zero/status", "zero_status", status)
 
+    # Model containment at the HTTP layer (the browser is online now):
+    #  * Host allow-list: a web page that DNS-rebinds its own name to 127.0.0.1 is refused, so no site
+    #    can read the chat's answers or memory;
+    #  * cross-site POSTs (Origin header from anywhere else) are refused;
+    #  * Content-Security-Policy: the chat page can load nothing and send nothing outside 127.0.0.1, so
+    #    text the model writes (e.g. an <img src=https://...>) cannot carry it off the machine.
+    from flask import request as _req, abort as _abort
+    allowed_hosts = {"127.0.0.1:%d" % PORT, "localhost:%d" % PORT, "[::1]:%d" % PORT}
+    allowed_origins = {"http://" + h for h in allowed_hosts}
+
+    def contain():
+        if _req.host.lower() not in allowed_hosts:
+            _abort(403)
+        if _req.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = _req.headers.get("Origin")
+            if origin and origin.lower() not in allowed_origins:
+                _abort(403)
+
+    def headers(resp):
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'self' data: blob:; "
+            "object-src 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'")
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["X-Frame-Options"] = "DENY"
+        return resp
+
+    chat_server.APP.before_request(contain)
+    chat_server.APP.after_request(headers)
+
     m = chat_server._mind()
     log("leCore mind booted in %.1fs (partition %s)" % (time.time() - t0, os.environ.get("LECORE_PARTITION")))
     if LLM_URL:

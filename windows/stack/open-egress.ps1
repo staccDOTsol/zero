@@ -1,73 +1,33 @@
 <#
 .SYNOPSIS
-  Deliberately opens network egress on a Zero laptop (undoes the firewall part of lockdown.ps1).
+  Deliberately lets the Zero inference programs (llama-server.exe and leCore's embedded Python) reach
+  the network. For the OWNER, on purpose: afterwards the model's input and output CAN leave the machine.
 
 .DESCRIPTION
-  For the OWNER, on purpose. Run from an elevated PowerShell:
+  Windows itself is never cut off by Zero (the firewall's default outbound action is Allow); only the two
+  inference programs are contained. This script removes the six "Zero: ... stays on this machine" firewall
+  rules and disables the boot-time "Zero model containment check" task so they are not re-added.
+  Needed, for example, for leCore chat commands that call outside services ("learn api: <URL>",
+  "use api: ...") or for attaching a remote model in the chat's Settings.
 
-      & 'C:\Program Files\leCore+\setup\open-egress.ps1'                 # firewall only
-      & 'C:\Program Files\leCore+\setup\open-egress.ps1' -WindowsUpdate  # ...and turn Windows Update back on
-      & 'C:\Program Files\leCore+\setup\open-egress.ps1' -TimeSync       # ...and NTP time sync
+      & 'C:\Program Files\leCore+\setup\open-egress.ps1'
 
-  What it does:
-    * removes the "Zero: block all non-loopback outbound traffic" rule,
-    * sets DefaultOutboundAction back to Allow (local store) and removes the firewall policy values,
-    * re-enables the outbound Allow rules lockdown.ps1 disabled (it recorded their names),
-    * disables the boot-time "Zero zero-egress check" task, so the next boot does not close egress again.
-  Everything else (telemetry, Edge, Copilot, consumer features) stays off. To close egress again,
-  run C:\Program Files\leCore+\setup\lockdown.ps1 (it re-enables the boot-time check).
+  To contain them again: & 'C:\Program Files\leCore+\setup\lockdown.ps1'   (re-enables the boot-time check)
 
-  Windows PowerShell 5.1 compatible.
+  Windows PowerShell 5.1 compatible; run elevated.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-param(
-    [switch]$WindowsUpdate,
-    [switch]$TimeSync,
-    [string]$DataRoot = (Join-Path $env:ProgramData 'leCore+')
-)
+param()
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$state = Join-Path $DataRoot 'lockdown'
 
-if (-not $PSCmdlet.ShouldProcess('this computer', 'Open outbound network access (undo the Zero zero-egress firewall lockdown)')) { return }
+if (-not $PSCmdlet.ShouldProcess('llama-server.exe and leCore python.exe', 'Allow network access (model input/output may leave this machine)')) { return }
 
-$task = Get-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero zero-egress check' -ErrorAction SilentlyContinue
-if ($task) { Disable-ScheduledTask -InputObject $task | Out-Null; Write-Host 'boot-time zero-egress check disabled' }
-
-Remove-NetFirewallRule -Name 'LecorePlus-ZeroEgress-Block' -ErrorAction SilentlyContinue
-foreach ($prof in 'DomainProfile', 'PrivateProfile', 'PublicProfile') {
-    $k = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\$prof"
-    if (Test-Path $k) { Remove-ItemProperty -Path $k -Name 'DefaultOutboundAction' -ErrorAction SilentlyContinue }
+foreach ($n in 'Zero model containment check', 'Zero zero-egress check') {
+    $task = Get-ScheduledTask -TaskPath '\Zero\' -TaskName $n -ErrorAction SilentlyContinue
+    if ($task) { Disable-ScheduledTask -InputObject $task | Out-Null; Write-Host "disabled task \Zero\$n" }
 }
-Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Allow
-
-$names = @()
-foreach ($f in 'outbound-rules-disabled.txt', 'outbound-rules-disabled-offline.txt') {
-    $p = Join-Path $state $f
-    if (Test-Path -LiteralPath $p) { $names += @(Get-Content -LiteralPath $p | Where-Object { $_ }) }
-}
-$names = @($names | Sort-Object -Unique)
-$n = 0
-foreach ($name in $names) {
-    try { Enable-NetFirewallRule -Name $name -ErrorAction Stop; $n++ } catch { }
-}
-Write-Host "re-enabled $n outbound allow rule(s); default outbound action is Allow"
-
-if ($WindowsUpdate) {
-    Remove-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DriverSearching' -Name 'DontSearchWindowsUpdate' -ErrorAction SilentlyContinue
-    foreach ($s in @{ wuauserv = 3; UsoSvc = 2; WaaSMedicSvc = 3; DoSvc = 2 }.GetEnumerator()) {
-        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($s.Key)" -Name 'Start' -Value $s.Value -ErrorAction SilentlyContinue
-    }
-    Get-ScheduledTask -TaskPath '\Microsoft\Windows\WindowsUpdate\' -ErrorAction SilentlyContinue | Enable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
-    Get-ScheduledTask -TaskPath '\Microsoft\Windows\UpdateOrchestrator\' -ErrorAction SilentlyContinue | Enable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
-    Write-Host 'Windows Update re-enabled (takes effect after a restart)'
-}
-if ($TimeSync) {
-    Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\W32Time\TimeProviders\NtpClient' -Name 'Enabled' -ErrorAction SilentlyContinue
-    Set-Service -Name W32Time -StartupType Manual
-    Start-Service -Name W32Time
-    & w32tm.exe /resync /force | Out-Null
-    Write-Host 'time sync re-enabled'
-}
-Write-Host 'Egress is OPEN. Run lockdown.ps1 to close it again.'
+$rules = @(Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue)
+$rules | Remove-NetFirewallRule
+Write-Host "removed $($rules.Count) containment rule(s). llama-server and leCore can now reach the network."
+Write-Host 'Run lockdown.ps1 to contain them again.'

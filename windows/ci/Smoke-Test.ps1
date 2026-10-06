@@ -5,15 +5,18 @@
 
   Proves, in order (each step prints PASS/FAIL and the evidence):
     1. install.ps1 -SkipLockdown -TestMode installs from the offline payload and registers both services
-    2. llama service with no model configured: stops cleanly (exit 0), logs why
+    2. llama service with no model configured: a clean no-op (nothing listens on :8080), logs why
     3. chat on 127.0.0.1:7860 answers memory-only (GET /, title "Zero", POST /api/chat)
     4. provision\windows-add-models.ps1 -All pro with a test catalog (tiny test GGUF, never shipped):
        download, sha256 check, copy, model.txt; plus -DryRun against the real models/catalog.json per tier
     5. llama service with the model: /v1/models lists it, /v1/chat/completions answers
-    6. chat -> model rung: a question memory cannot answer comes back with provenance "model-cached"
-       and llama-server's log shows the request
-    7. the chat process attempted no non-loopback connection or DNS lookup (egress guard log empty)
-    8. lockdown.ps1 -WhatIf: exits 0, lists its actions, and changes nothing on this runner
+    6. chat -> model rung: a question memory cannot answer is answered by llama-server
+    7. the chat process attempted no non-loopback connection or DNS lookup (in-process egress guard)
+    8. lockdown.ps1 -WhatIf lists its actions and changes nothing; the full lockdown refuses on CI
+    8b. lockdown.ps1 -FirewallOnly applied for real: general outbound and other Pythons still work,
+        leCore's python.exe and the llama-server.exe path cannot reach a non-loopback address, both
+        listen on 127.0.0.1 only, chat -> model still works, chat refuses rebinding/cross-site requests
+    8c. llama.cpp's Vulkan backend runs the model on a software Vulkan device (Mesa lavapipe, CI only)
     9. PSScriptAnalyzer: no errors in windows\ and provision\windows-*.ps1
 #>
 param(
@@ -150,7 +153,105 @@ foreach ($q in 'Write one short sentence about a lighthouse keeper named Brindle
 }
 Check 'chat on :7860 answers through the model on :8080' ($null -ne $viaModel) $(if ($viaModel) { "llama-server ran $tasksUsed task(s) for the chat; provenance='$($viaModel.provenance)'; text=$($viaModel.text)" } else { 'no model-backed answer' })
 
-# 6b. the Vulkan backend on a software Vulkan device (CI only; never shipped) ----------------------
+# 7. egress guard --------------------------------------------------------------------------------
+$guard = Join-Path $logs 'egress-guard.log'
+$chatLog = Tail (Join-Path $logs 'lecore-chat.out.log') 400
+Check 'chat process made no non-loopback connection or DNS lookup' ((-not (Test-Path $guard) -or -not (Get-Content $guard)) -and $chatLog -match 'egress guard ON') $(if (Test-Path $guard) { Tail $guard 10 } else { 'egress-guard.log empty; guard was ON' })
+
+# 8. lockdown -WhatIf -----------------------------------------------------------------------------
+$lkOk = $true
+try { $lk = & (Join-Path $root 'setup\lockdown.ps1') -WhatIf -InstallBootTask 6>&1 3>&1 | Out-String }
+catch { $lkOk = $false; $lk = "lockdown -WhatIf threw: $($_.Exception.Message)" }
+$whatIfs = ([regex]::Matches($lk, '\[lockdown\] WHATIF ')).Count
+$fwAfter = (Get-NetFirewallProfile | Sort-Object Name | ForEach-Object { "$($_.Name):$($_.Enabled):$($_.DefaultOutboundAction)" }) -join ' '
+$rulesAfter = @(Get-NetFirewallRule -Direction Outbound -Enabled True -ErrorAction SilentlyContinue).Count
+Check 'lockdown.ps1 -WhatIf runs clean' ($lkOk -and $whatIfs -ge 25) ("$whatIfs planned actions; " + (($lk -split "`n" | Where-Object { $_ -match 'results:' }) -join ' '))
+Check 'lockdown -WhatIf changed nothing on the runner' ($fwBefore -eq $fwAfter -and $rulesBefore -eq $rulesAfter -and -not (Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue)) "firewall before=[$fwBefore] after=[$fwAfter]; enabled outbound rules $rulesBefore -> $rulesAfter"
+$guardMsg = Invoke-Quiet { & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '$root\setup\lockdown.ps1' -WhatIf:`$false" } | Out-String
+Check 'full lockdown (machine policy) refuses to run on a CI runner' ($guardMsg -match 'Refusing to apply the full Zero lockdown') (($guardMsg -split "`n" | Select-Object -First 2) -join ' ')
+$lk | Set-Content -LiteralPath (Join-Path (Split-Path $Report) 'lockdown-whatif.txt') -Encoding utf8
+
+# 8b. model containment, for real, on this runner ------------------------------------------------------
+# lockdown.ps1 -FirewallOnly adds only the per-program rules (llama-server.exe, leCore's python.exe /
+# pythonw.exe -> no non-loopback address) and keeps DefaultOutboundAction Allow, so it is safe on the runner.
+function Get-HttpCode([string]$Exe, [string[]]$More) {
+    $o = Invoke-Quiet { & $Exe -s -o NUL -w '%{http_code}' --max-time 20 @More } | Out-String
+    return $o.Trim()
+}
+$fo = Invoke-Quiet { & (Join-Path $root 'setup\lockdown.ps1') -FirewallOnly } | Out-String
+Write-Host $fo
+$rules = @(Get-NetFirewallRule -Name 'LecorePlus-Contain-*' -ErrorAction SilentlyContinue)
+$ruleInfo = ($rules | ForEach-Object { "{0} {1} {2} {3}" -f $_.Name, $_.Direction, $_.Action, (($_ | Get-NetFirewallApplicationFilter).Program) }) -join ' / '
+$profAllow = @(Get-NetFirewallProfile | Where-Object { $_.Enabled -and $_.DefaultOutboundAction -eq 'Allow' }).Count -eq 3
+Check 'containment applied: 6 per-program Block rules, every profile default outbound Allow' ($rules.Count -eq 6 -and $profAllow) "$ruleInfo"
+
+$curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+$code = Get-HttpCode $curl @('https://www.microsoft.com/')
+Check 'general outbound works (curl.exe -> https://www.microsoft.com)' ($code -match '^[23]\d\d$') "HTTP $code"
+$probe = "import socket,urllib.request`ntry:`n  s=socket.create_connection(('1.1.1.1',443),10); s.close(); print('TCP-OK')`nexcept Exception as e: print('TCP-FAIL', type(e).__name__, e)`ntry:`n  print('HTTP-OK', urllib.request.urlopen('https://pypi.org/simple/', timeout=15).status)`nexcept Exception as e: print('HTTP-FAIL', type(e).__name__, e)"
+$probeFile = Join-Path $env:RUNNER_TEMP 'egress_probe.py'
+[IO.File]::WriteAllText($probeFile, $probe)
+$otherPy = (Get-Command python.exe -ErrorAction SilentlyContinue | Where-Object { $_.Source -notlike "$root*" } | Select-Object -First 1).Source
+$o1 = (Invoke-Quiet { & $otherPy $probeFile } | Out-String).Trim()
+Check "another Python is not affected ($otherPy)" ($o1 -match 'TCP-OK' -and $o1 -match 'HTTP-OK') ($o1 -replace "`r?`n", ' | ')
+$o2 = (Invoke-Quiet { & (Join-Path $root 'python\python.exe') -X utf8 $probeFile } | Out-String).Trim()
+Check "leCore's python.exe cannot reach a non-loopback address" ($o2 -match 'TCP-FAIL' -and $o2 -match 'HTTP-FAIL' -and $o2 -notmatch '-OK') ($o2 -replace "`r?`n", ' | ')
+
+# llama-server.exe path: swap a copy of curl.exe in at exactly that path (the rule matches the program
+# path), try to reach the internet, put llama-server.exe back.
+$llamaExe = Join-Path $root 'llama\llama-server.exe'
+Stop-Service lecore-llama
+Start-Sleep -Seconds 2
+Rename-Item -LiteralPath $llamaExe -NewName 'llama-server.exe.real'
+try {
+    Copy-Item -LiteralPath $curl -Destination $llamaExe
+    $c3 = Get-HttpCode $llamaExe @('https://www.microsoft.com/')
+    $c4 = Get-HttpCode $llamaExe @('http://127.0.0.1:7860/zero/status')
+} finally {
+    Remove-Item -Force -LiteralPath $llamaExe
+    Rename-Item -LiteralPath "$llamaExe.real" -NewName 'llama-server.exe'
+}
+Check 'the llama-server.exe program path cannot reach a non-loopback address (loopback still works)' ($c3 -eq '000' -and $c4 -eq '200') "internet HTTP $c3 (000 = blocked), 127.0.0.1:7860 HTTP $c4"
+# Same check with llama-server itself: --model-url download (no --offline) from the installed path vs. a copy elsewhere.
+$copyDir = Join-Path $env:RUNNER_TEMP 'llama-copy'
+& robocopy.exe (Join-Path $root 'llama') $copyDir /E /NFL /NDL /NJH /NJS /NP | Out-Null
+function Try-LlamaDownload([string]$Exe, [int]$Port) {
+    $cache = Join-Path $env:RUNNER_TEMP "llcache-$Port"
+    New-Item -ItemType Directory -Force -Path $cache | Out-Null
+    $env:LLAMA_CACHE = $cache
+    $p = Start-Process -FilePath $Exe -ArgumentList @('--host', '127.0.0.1', '--port', "$Port", '-mu', 'https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf') `
+        -RedirectStandardError (Join-Path $env:RUNNER_TEMP "ll-$Port.err") -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP "ll-$Port.out") -PassThru -WindowStyle Hidden
+    $deadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $deadline -and -not $p.HasExited -and -not (Get-ChildItem $cache -Recurse -File -Filter *.gguf -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 500KB })) { Start-Sleep -Seconds 2 }
+    $got = @(Get-ChildItem $cache -Recurse -File -Filter *.gguf -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 500KB }).Count -gt 0
+    if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+    Remove-Item Env:\LLAMA_CACHE
+    $log = ((Get-Content (Join-Path $env:RUNNER_TEMP "ll-$Port.err") -ErrorAction SilentlyContinue) | Where-Object { $_ -match 'download|curl|http|error|fail' } | Select-Object -Last 3) -join ' / '
+    return @{ Got = $got; Log = $log }
+}
+$dlCopy = Try-LlamaDownload (Join-Path $copyDir 'llama-server.exe') 8098
+$dlInst = Try-LlamaDownload $llamaExe 8097
+$okLlama = (-not $dlInst.Got) -and $dlCopy.Got
+Check 'llama-server (installed path) cannot download; the same binary copied elsewhere can' $okLlama ("copy: downloaded={0} [{1}] | installed: downloaded={2} [{3}]" -f $dlCopy.Got, $dlCopy.Log, $dlInst.Got, $dlInst.Log)
+
+Start-Service lecore-llama
+$null = Wait-Http 'http://127.0.0.1:8080/v1/models' 300
+$listen = @(Get-NetTCPConnection -State Listen -LocalPort 7860, 8080 -ErrorAction SilentlyContinue)
+Check 'llama-server and the chat listen on 127.0.0.1 only' ($listen.Count -ge 2 -and -not @($listen | Where-Object { $_.LocalAddress -ne '127.0.0.1' }).Count) (($listen | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" } | Sort-Object -Unique) -join ', ')
+$before = Get-LlamaTasks
+try { $r = Post-Json 'http://127.0.0.1:7860/api/chat' @{ message = 'Write one short sentence about a lantern named Quill.'; workspace = 'default' } 300 } catch { $r = $null }
+$used = (Get-LlamaTasks) - $before
+Check 'with containment on, the chat still reaches the model over loopback' ($r -and $r.text -and $used -ge 1) ("llama tasks +{0}; text={1}" -f $used, $(if ($r) { $r.text } else { '' }))
+
+$h1 = Get-HttpCode $curl @('-H', 'Host: zero.attacker.example:7860', 'http://127.0.0.1:7860/zero/status')
+$h2 = Get-HttpCode $curl @('-X', 'POST', '-H', 'Origin: https://attacker.example', '-H', 'Content-Type: text/plain', '--data', '{"message":"hi"}', 'http://127.0.0.1:7860/api/chat')
+$hdr = (Invoke-Quiet { & $curl -s -D - -o NUL --max-time 20 'http://127.0.0.1:7860/' } | Out-String)
+$csp = ($hdr -split "`n" | Where-Object { $_ -match '^Content-Security-Policy:' }) -join ''
+Check 'chat refuses DNS-rebinding hosts and cross-site posts; CSP keeps the page on 127.0.0.1' ($h1 -eq '403' -and $h2 -eq '403' -and $csp -match "default-src 'self'") "foreign Host -> $h1, foreign Origin POST -> $h2; $($csp.Trim())"
+$cors = (Invoke-Quiet { & $curl -s -D - -o NUL --max-time 20 -H 'Origin: https://attacker.example' 'http://127.0.0.1:8080/v1/models' } | Out-String)
+Check 'llama-server does not grant CORS to other sites' ($cors -notmatch 'Access-Control-Allow-Origin:\s*(\*|https://attacker)') (($cors -split "`n" | Where-Object { $_ -match '^HTTP/|Access-Control' }) -join ' / ')
+
+# 8c. the Vulkan backend on a software Vulkan device (CI only; never shipped) ----------------------
 # The runner has no GPU. Install the Khronos loader + Mesa lavapipe, restart the model service (it runs as
 # LOCAL SERVICE in session 0, like on the laptop) and check llama.cpp's Vulkan backend loads the device
 # and runs the model on it.
@@ -199,24 +300,6 @@ try {
     Remove-Item -Force (Join-Path $data 'llama-args.txt')
     Check 'model service runs the model on the Vulkan device (as LOCAL SERVICE)' ([bool]$cc2.choices[0].message.content -and $since -match 'Vulkan0') ("answer: {0} | log: {1}" -f $cc2.choices[0].message.content, $vkLines)
 } catch { Check 'llama.cpp Vulkan backend on a software Vulkan device (CI only)' $false $_.Exception.Message }
-
-# 7. egress guard --------------------------------------------------------------------------------
-$guard = Join-Path $logs 'egress-guard.log'
-$chatLog = Tail (Join-Path $logs 'lecore-chat.out.log') 400
-Check 'chat process made no non-loopback connection or DNS lookup' ((-not (Test-Path $guard) -or -not (Get-Content $guard)) -and $chatLog -match 'egress guard ON') $(if (Test-Path $guard) { Tail $guard 10 } else { 'egress-guard.log empty; guard was ON' })
-
-# 8. lockdown -WhatIf -----------------------------------------------------------------------------
-$lkOk = $true
-try { $lk = & (Join-Path $root 'setup\lockdown.ps1') -WhatIf -InstallBootTask 6>&1 3>&1 | Out-String }
-catch { $lkOk = $false; $lk = "lockdown -WhatIf threw: $($_.Exception.Message)" }
-$whatIfs = ([regex]::Matches($lk, '\[lockdown\] WHATIF ')).Count
-$fwAfter = (Get-NetFirewallProfile | Sort-Object Name | ForEach-Object { "$($_.Name):$($_.Enabled):$($_.DefaultOutboundAction)" }) -join ' '
-$rulesAfter = @(Get-NetFirewallRule -Direction Outbound -Enabled True -ErrorAction SilentlyContinue).Count
-Check 'lockdown.ps1 -WhatIf runs clean' ($lkOk -and $whatIfs -gt 100) ("$whatIfs planned actions; " + (($lk -split "`n" | Where-Object { $_ -match 'results:' }) -join ' '))
-Check 'lockdown -WhatIf changed nothing on the runner' ($fwBefore -eq $fwAfter -and $rulesBefore -eq $rulesAfter -and -not (Get-NetFirewallRule -Name 'LecorePlus-ZeroEgress-Block' -ErrorAction SilentlyContinue)) "firewall before=[$fwBefore] after=[$fwAfter]; enabled outbound rules $rulesBefore -> $rulesAfter"
-$guardMsg = Invoke-Quiet { & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '$root\setup\lockdown.ps1' -FirewallOnly -WhatIf:`$false" } | Out-String
-Check 'lockdown refuses to run for real on a CI runner' ($guardMsg -match 'Refusing to apply the zero-egress lockdown') (($guardMsg -split "`n" | Select-Object -First 2) -join ' ')
-$lk | Set-Content -LiteralPath (Join-Path (Split-Path $Report) 'lockdown-whatif.txt') -Encoding utf8
 
 # 9. PSScriptAnalyzer -----------------------------------------------------------------------------
 $files = @(Get-ChildItem -Recurse -Path (Join-Path $RepoRoot 'windows') -Include *.ps1) + @(Get-ChildItem (Join-Path $RepoRoot 'provision') -Filter 'windows-*.ps1')

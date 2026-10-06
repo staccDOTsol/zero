@@ -3,7 +3,8 @@
 #   workflow_dispatch full -> + Windows 11 Pro ISOs per target, published as ≤1.9 GiB parts to the
 #                             PRIVATE release windows-YYYYMMDD-<shortsha>
 #   workflow_dispatch probe-> + resolve the ISO link and download/extract every driver package (prints sha256)
-# The zero-egress lockdown is NEVER applied to the runner (only -WhatIf, and offline to the mounted image).
+# The full lockdown is never applied to the runner (only -WhatIf, and offline to the mounted image); the smoke test
+# applies only its per-program firewall part (-FirewallOnly), which blocks just llama-server.exe and leCore's python.exe.
 name: windows-image
 
 on:
@@ -91,7 +92,7 @@ jobs:
         with:
           name: stack
           path: out
-      - name: Smoke test (install with lockdown skipped, both services, test GGUF, lockdown -WhatIf)
+      - name: Smoke test (install, both services, test GGUF, per-program containment, Vulkan on lavapipe)
         run: |
           & .\windows\ci\Smoke-Test.ps1 -StackZip "$env:GITHUB_WORKSPACE\out\lecore-plus-windows-stack.zip" -Report "$env:GITHUB_WORKSPACE\out\smoke-report.md"
       - name: Collect logs
@@ -235,8 +236,7 @@ jobs:
       - name: Build the ISO
         run: |
           & .\windows\build\Build-Image.ps1 -Target ${{ matrix.target }} -Iso C:\zb\win11.iso -StackZip "$env:GITHUB_WORKSPACE\out\lecore-plus-windows-stack.zip" `
-            -DriversRoot C:\zb\drivers\${{ matrix.target }} -WorkDir D:\zb\img -OutDir D:\zb\out -Tag "$env:TAG"
-          Remove-Item -Force C:\zb\win11.iso
+            -DriversRoot C:\zb\drivers\${{ matrix.target }} -WorkDir D:\zb\img -OutDir D:\zb\out -Tag "$env:TAG" -DeleteIsoAfterCopy
           Remove-Item -Recurse -Force C:\zb\drivers
       - name: Split into ≤1.9 GiB parts + SHA256SUMS, upload to the release
         run: |

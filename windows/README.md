@@ -1,8 +1,10 @@
 # Zero — Windows factory image
 
 Zero Pro, Zero Max and Zero Ultra ship Windows 11 Pro with the Zero stack: a local model
-(llama.cpp `llama-server`, Vulkan) and the leCore chat, with **zero egress**: the laptop makes no
-outbound network connections. leCore is the engine inside; the user sees "Zero".
+(llama.cpp `llama-server`, Vulkan) and the leCore chat, with **zero egress**: the model's input and
+output never leave the machine. The laptop itself is a normal online PC (Windows Update, Edge, the
+Store all use the network); only the two inference programs are walled off. leCore is the engine
+inside; the user sees "Zero".
 
 | Image | Hardware | Tiers |
 |---|---|---|
@@ -13,7 +15,7 @@ Built by [`.github/workflows/windows-image.yml`](../.github/workflows/windows-im
 to the **private** GitHub Release `windows-YYYYMMDD-<shortsha>`:
 
 - `<iso>.part01`, `.part02`, … — each ISO in ≤ 1.9 GiB parts (release assets must be < 2 GiB)
-- `lecore-plus-windows-stack.zip` — the stack installer + lockdown on its own, for imaging partners
+- `lecore-plus-windows-stack.zip` — the stack installer + model containment on its own, for imaging partners
 - `SHA256SUMS` — every part, every whole ISO, the stack zip
 
 This repo contains Microsoft's Windows installer. It is only for imaging licensed Zero laptops.
@@ -25,16 +27,20 @@ This repo contains Microsoft's Windows installer. It is only for imaging license
   with [Fido](https://github.com/pbatard/Fido) from Microsoft's download service and checked against the
   SHA-256 Microsoft publishes on microsoft.com/software-download/windows11, plus the Microsoft
   signature on `setup.exe`). No product key: each laptop's firmware carries an OEM Windows 11 Pro key.
-- **Drivers injected offline** (Windows Update never runs on a zero-egress laptop), all from the
-  vendors' own servers, pinned by sha256 in [`drivers.json`](drivers.json):
+- **Drivers injected offline**, so the laptop works fully from first boot with or without a network
+  (Windows Update may bring newer ones later), all from the vendors' own servers, pinned by sha256 in
+  [`drivers.json`](drivers.json):
   - HP: *HP ZBook Ultra G1a MWS Windows 11 Driver Pack* (SoftPaq sp168475) + **AMD Software: Adrenalin
     Edition** (Radeon 8060S, Vulkan) from drivers.amd.com.
   - Lenovo: *ThinkPad P16 Gen 3 SCCM driver pack, Windows 11 25H2* + the Lenovo WinPE pack (Intel RST /
     VMD, so Setup sees the NVMe disk) + **NVIDIA RTX Enterprise driver** (RTX PRO 5000 Blackwell, Vulkan).
-  - Both the OEM pack's GPU driver and the vendor's current GPU driver are in the driver store; Windows
-    picks the best match. The build log lists every display INF that matches the GPU's PCI ID.
-- **The zero-egress lockdown pre-applied to the image** (`lockdown.ps1 -OfflineImage`), so egress is
-  blocked from the very first boot, before OOBE.
+  - Both the OEM pack's GPU driver and the vendor's current GPU driver are in the driver store. Both
+    list the laptop's exact PCI subsystem ID, so Windows picks the newer one: AMD 32.0.31041.1004
+    (Adrenalin 26.8.1) over HP's 32.0.22018.5; NVIDIA 32.0.15.9716 (597.16, `nvltwi.inf`) over
+    Lenovo's 32.0.15.9658. Only the NVIDIA INF for this GPU is injected (the package's other 19 OEM
+    INFs would each add a 1.3 GB copy to the driver store). Both GPU drivers install the Vulkan loader.
+- **Privacy toggles and the registry part of the model containment pre-applied to the image**
+  (`lockdown.ps1 -OfflineImage`); the per-program firewall rules are added when the stack is installed.
 - **The stack installer** under `C:\Windows\Setup\Scripts\lecore-plus\`, run by `autounattend.xml`
   in the *specialize* pass (Microsoft disables `SetupComplete.cmd` when an OEM product key is used, which
   these laptops have; `SetupComplete.cmd` is included as an idempotent fallback).
@@ -73,7 +79,7 @@ Experience" customization: the ISO's own `autounattend.xml` already does that jo
 
 1. Boot the laptop from the stick (F9 on HP, F12 on Lenovo). Keep it **off the network**.
 2. Choose the internal NVMe disk; delete its partitions if it has an old install. Setup installs
-   Windows 11 Pro, then the *specialize* pass installs the Zero stack and applies the lockdown
+   Windows 11 Pro, then the *specialize* pass installs the Zero stack and applies the model containment
    (`C:\Windows\Setup\Scripts\lecore-plus-specialize.log`, `C:\ProgramData\leCore+\logs\install-*.log`).
 3. OOBE: region/keyboard, then the owner names the local account. No network, no Microsoft account.
 4. At sign-in Zero opens (Edge app window on `http://127.0.0.1:7860`). With no model on the disk
@@ -115,7 +121,7 @@ before shipping (edit `model.txt`, `Restart-Service lecore-llama`, then
 
 | | Service (WinSW wrapper, `NT AUTHORITY\LocalService`) | Listens | Path |
 |---|---|---|---|
-| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model>` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
+| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model> --offline --no-webui --cors-origins localhost` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
 | Zero chat | `lecore-chat` → `lecore_plus_chat.py` → leCore `chat_server.py` | 127.0.0.1:7860 | `C:\Program Files\leCore+\lecore\` (leCore `21abb4f`, MIT) on Python 3.13.16 embeddable |
 
 - Both are automatic services with restart-on-failure. No model configured → `lecore-llama` is a clean
@@ -129,60 +135,41 @@ before shipping (edit `model.txt`, `Restart-Service lecore-llama`, then
   (seeded from leCore's `release_bundle`).
 - Python packages were installed from a wheelhouse in the payload (`pip --no-index`, hashes required);
   NLTK corpora leCore references are pre-staged and `nltk.download()` is an offline no-op; Hugging
-  Face libraries are set offline. Nothing on the laptop downloads.
+  Face libraries are set offline. Nothing in the stack downloads at runtime.
 - Start menu: **Zero** (`msedge --app=http://127.0.0.1:7860`). At sign-in the All Users Startup entry
   waits for the chat and opens the same app window.
 - Logs: `C:\ProgramData\leCore+\logs\` (`lecore-chat.out.log`, `lecore-llama.out.log`, install logs).
 
-## What the lockdown turns off, and why
+## Zero egress: what keeps the model's input and output on the machine
 
-`C:\Program Files\leCore+\setup\lockdown.ps1` (applied offline to the image, again in the specialize
-pass, and a firewall-only check at every boot via the `\Zero\Zero zero-egress check` task). Every
-action is logged to `C:\ProgramData\leCore+\lockdown\lockdown-*.csv`. Run it with `-WhatIf` to see the
-full list.
+`C:\Program Files\leCore+\setup\lockdown.ps1` (registry part applied offline to the image; everything
+again in the specialize pass; the firewall part re-asserted at every boot by the
+`\Zero\Zero model containment check` task). Every action is logged to
+`C:\ProgramData\leCore+\lockdown\lockdown-*.csv`; `-WhatIf` prints the full list.
 
-| Area | What | Why |
+| What | How | Why |
 |---|---|---|
-| Firewall | On for Domain/Private/Public; `DefaultOutboundAction Block` (local store **and** policy); every enabled outbound Allow rule disabled (names recorded); one Block rule for all non-loopback addresses | The guarantee. Loopback (127.0.0.0/8, ::1) is not filtered, so Edge → chat → model works. DHCP/DNS are blocked too: the laptop never puts a packet on the wire. |
-| Windows Update | `wuauserv`, `UsoSvc`, `WaaSMedicSvc` disabled; `NoAutoUpdate`, `DoNotConnectToWindowsUpdateInternetLocations`, no driver search on WU; WU scheduled tasks disabled | All drivers are in the image; updates would need egress. |
-| Delivery Optimization | `DoSvc` disabled, `DODownloadMode 99` | Peer/cloud downloads. |
-| Telemetry | `DiagTrack`, `dmwappushservice` disabled; `AllowTelemetry 0`; CEIP, app inventory, error reporting, feedback off | Windows 11 **Pro** treats `AllowTelemetry 0` as 1 ("Required"); with DiagTrack disabled and the firewall closed nothing is sent. |
-| Connectivity probe | NCSI `NoActiveProbe`, `EnableActiveProbing 0` | No msftconnecttest.com probes (the network icon will say "No internet"). |
-| Time | `W32Time`, `tzautoupdate` disabled; NTP client policy off | NTP is egress. The clock runs from the RTC; set the time zone by hand. |
-| Store | `AutoDownload 2`, `InstallService` disabled | No app updates. |
-| Edge | `edgeupdate`/`edgeupdatem` + update tasks disabled; policies: no sign-in, no sync, no SmartScreen, no diagnostic data, no component updates, no search suggestions, no sidebar/Copilot, no first-run | The app window is local-only. |
-| Defender | Cloud protection (MAPS) off, sample submission never, block-at-first-sight off | Local antimalware keeps running. **Signature updates need manual offline packages** (below). With Tamper Protection on, Windows ignores these two settings; the firewall still blocks the traffic. |
-| Search | No Bing/web results or suggestions in Start, no Cortana, no cloud search | |
-| OneDrive | Sync client disabled by policy; setup not run for new users | |
-| Copilot / Recall | Copilot app removed, Copilot policy off; Recall feature removed + `DisableAIDataAnalysis`, `AllowRecallEnablement 0`; Click to Do off | The HP has a Copilot+-class NPU. |
-| Consumer features | Suggested/silently installed apps, tips, Spotlight, Widgets news, Start recommendations off; cloud-only apps removed (Bing News/Weather/Search, Office hub, new Outlook, Teams, Clipchamp, To Do, Feedback Hub, Get Help, Quick Assist, Family, Phone Link, Solitaire, Dev Home) | `DisableWindowsConsumerFeatures` is honoured only on Enterprise/Education, so Pro also gets the per-user settings in the default profile. |
-| Other egress | Location, Find my device, advertising ID, activity history, inking/typing + online speech, settings sync, root-certificate auto-update, online font providers, map downloads, push notifications from the cloud, SmartScreen | |
+| Firewall, per program | Windows Firewall on, **DefaultOutboundAction Allow** on Domain/Private/Public. Outbound **and** inbound Block rules for every non-loopback address (everything except 127.0.0.0/8 and ::1) on exactly `C:\Program Files\leCore+\llama\llama-server.exe` and leCore's embedded `C:\Program Files\leCore+\python\python.exe` / `pythonw.exe` | The guarantee. Block rules beat allow rules. Any other Python, Edge, Windows Update etc. network normally. |
+| Loopback only | `llama-server --host 127.0.0.1`; the chat binds `127.0.0.1:7860` | Nothing on the LAN can talk to them. |
+| llama.cpp | `--offline` (never downloads), `--no-webui` (no built-in web UI; Zero's UI is the chat), `--cors-origins localhost` (no web page from elsewhere can read answers) | llama.cpp has no telemetry; these close its remote-fetch paths. |
+| leCore chat | Host allow-list (`127.0.0.1:7860`, `localhost:7860`) against DNS rebinding; cross-site POSTs refused; `Content-Security-Policy` so the chat page loads and sends nothing outside 127.0.0.1 (model text such as `<img src=https://…>` cannot leak) | The browser is online, so the chat must not answer other sites. |
+| leCore Python | NLTK corpora pre-staged, `nltk.download()` is an offline no-op; Hugging Face libraries offline | leCore has no telemetry; these are its only automatic downloads. |
+| Crash dumps | Windows Error Reporting excludes `llama-server.exe`, `python.exe`, `pythonw.exe` | A dump is the process memory, i.e. prompts and answers. |
+| Edge (the Zero window) | Off: Microsoft Editor cloud proofing + synonyms, text prediction, Copilot page context. Everything else in Edge is untouched | These send what you type, or what the page shows, to Microsoft. Windows' local spell check still works. |
+| Privacy toggles | The OOBE privacy page, all off: location, Find my device, diagnostic data Required only (`AllowTelemetry 0`; Pro's floor is "Required"), inking & typing, online speech recognition, tailored experiences, advertising ID | Original image requirement. |
 
-### Activation
+Provisioning and model downloads use the network on the imaging station (`windows-add-models.ps1`).
 
-The firmware key is picked up automatically (no key in `autounattend.xml`). Windows **activation**
-itself contacts Microsoft once; under zero egress it cannot. Either activate at the imaging station
-before the laptop leaves (open egress briefly, see below, then run `lockdown.ps1` again), or the owner
-uses phone activation (`slui 4`). Windows keeps working unactivated, with the "Activate Windows" notice.
+leCore features that need the network, and therefore **do not work** while contained (the chat says
+it could not reach the address): the chat commands `learn api: <URL>` / `use api: service.endpoint`
+(call outside HTTP APIs), and attaching a non-local model under Settings. They are left as they are.
 
-### Defender signatures offline
-
-On a connected PC download the x64 definition package `mpam-fe.exe` from
-<https://www.microsoft.com/en-us/wdsi/defenderupdates>, copy it over on a USB stick, run it elevated.
-
-## Opening egress deliberately (owner)
-
-Elevated PowerShell on the laptop:
+### Letting the inference programs reach the network (owner, deliberately)
 
 ```powershell
-& 'C:\Program Files\leCore+\setup\open-egress.ps1'                  # firewall only
-& 'C:\Program Files\leCore+\setup\open-egress.ps1' -WindowsUpdate   # also turn Windows Update back on
-& 'C:\Program Files\leCore+\setup\open-egress.ps1' -TimeSync        # also NTP
+& 'C:\Program Files\leCore+\setup\open-egress.ps1'     # removes the 6 containment rules + the boot-time check
+& 'C:\Program Files\leCore+\setup\lockdown.ps1'        # contains them again
 ```
-
-It removes the block rule and the firewall policy, sets the default outbound action to Allow,
-re-enables the outbound rules the lockdown disabled, and disables the boot-time check. To close
-egress again: `& 'C:\Program Files\leCore+\setup\lockdown.ps1'`.
 
 ## For factory imaging partners (HP / Lenovo services, distributors)
 
@@ -192,14 +179,15 @@ capture their own Windows 11 Pro WIM:
 1. Use Windows 11 Pro x64 with your own driver set for the model (see `drivers.json` for ours).
 2. In **audit mode** (or your task sequence, as SYSTEM), unzip and run, elevated:
    ```powershell
-   .\lecore-plus-windows-stack\install.ps1              # install + lockdown
-   .\lecore-plus-windows-stack\install.ps1 -SkipLockdown # if you lock down later in your sequence
+   .\lecore-plus-windows-stack\install.ps1              # install + model containment
+   .\lecore-plus-windows-stack\install.ps1 -SkipLockdown # if you run lockdown.ps1 later in your sequence
    ```
    Everything installs from `payload\` (verified against `manifest.json`); nothing is downloaded.
    Re-running is safe.
 3. Add the models with `provision\windows-add-models.ps1 -All <tier> -Target <volume>`.
-4. Apply `lockdown.ps1` last (or let `install.ps1` do it), then sysprep/capture as usual. To pre-lock
-   an offline image instead: `lockdown.ps1 -OfflineImage <mount dir>` against a DISM-mounted WIM.
+4. Apply `lockdown.ps1` last (or let `install.ps1` do it), then sysprep/capture as usual. Its
+   registry part can also go into an offline image: `lockdown.ps1 -OfflineImage <mount dir>` against a
+   DISM-mounted WIM (the firewall rules need the installed programs, so run it live once too).
 5. If your flow uses `SetupComplete.cmd`, ours is in the zip: it runs `install.ps1` from
    `%WINDIR%\Setup\Scripts\lecore-plus\`. Remember Windows skips `SetupComplete.cmd` when an OEM product
    key is present; use an unattend `RunSynchronous` command in the specialize pass instead, as
@@ -219,7 +207,10 @@ The ISO never erases a disk by itself. To make a fully unattended factory stick,
 pushes to `windows/**` run the stack build and the smoke test. Each image job: ADK Deployment Tools
 (oscdimg) → ISO → drivers → DISM servicing → oscdimg → split + upload, about 1–2 h per target.
 
-The CI smoke test installs the stack on the runner **without** the lockdown, starts both services,
-provisions a tiny test GGUF (never shipped) through `windows-add-models.ps1`, checks
-`/v1/models`, a chat answer that comes from the model, that the chat process attempted no non-loopback
-connection, and that `lockdown.ps1 -WhatIf` runs clean and changes nothing.
+The CI smoke test installs the stack on the runner without the machine-policy part of the lockdown,
+starts both services, provisions a tiny test GGUF (never shipped) through `windows-add-models.ps1`,
+checks `/v1/models` and a chat answer that comes from the model, then applies the per-program firewall
+part for real and proves: general outbound and another Python still reach the internet; leCore's
+`python.exe` and the `llama-server.exe` path cannot (loopback still works); both listen on 127.0.0.1
+only; the chat refuses rebinding / cross-site requests. It also runs the shipped Vulkan build of
+llama.cpp on a software Vulkan device (Mesa lavapipe, CI only) as the `LOCAL SERVICE` account.

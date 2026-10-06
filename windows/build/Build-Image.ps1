@@ -4,7 +4,7 @@
 
   1. copies the official Microsoft ISO's files, exports ONLY the "Windows 11 Pro" edition
   2. offline-services that install.wim with DISM: injects the target's OEM driver pack + current GPU
-     driver (Get-Drivers.ps1 output), pre-applies the zero-egress lockdown to the image's hives
+     driver (Get-Drivers.ps1 output), pre-applies the privacy + model-containment registry settings to the image's hives
      (lockdown.ps1 -OfflineImage), removes Copilot/Recall/cloud-only apps, and stages the stack
      installer + SetupComplete.cmd under C:\Windows\Setup\Scripts
   3. injects storage drivers into boot.wim (Windows Setup) so the installer sees the NVMe disk
@@ -20,7 +20,8 @@ param(
     [string]$Oscdimg = $env:OSCDIMG,
     [string]$WorkDir = 'C:\zb\img',
     [string]$OutDir = 'C:\zb\out',
-    [string]$Tag = 'local'
+    [string]$Tag = 'local',
+    [switch]$DeleteIsoAfterCopy
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
 $winDir = Split-Path -Parent $PSScriptRoot
@@ -34,7 +35,8 @@ $mount = Join-Path $WorkDir 'mount'
 $bootMount = Join-Path $WorkDir 'bootmount'
 $proWim = Join-Path $WorkDir 'pro.wim'
 $finalWim = Join-Path $WorkDir 'install.wim'
-foreach ($d in $WorkDir, $OutDir) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+$scratch = Join-Path $WorkDir 'scratch'     # DISM scratch space next to the work dir (the default is %TEMP% on C:)
+foreach ($d in $WorkDir, $OutDir, $scratch) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 foreach ($d in $isoDir, $mount, $bootMount) { if (Test-Path $d) { Remove-Item -Recurse -Force $d }; New-Item -ItemType Directory -Force -Path $d | Out-Null }
 Show-Disk 'start'
 $t0 = Get-Date
@@ -46,6 +48,7 @@ try {
     & robocopy.exe $src $isoDir /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
 } finally { Dismount-DiskImage -ImagePath $Iso | Out-Null }
+if ($DeleteIsoAfterCopy) { Remove-Item -Force -LiteralPath $Iso }
 Get-ChildItem -Recurse -File $isoDir | Where-Object { $_.IsReadOnly } | ForEach-Object { $_.IsReadOnly = $false }
 Lap 'copied'
 
@@ -55,7 +58,7 @@ $pro = Get-WindowsImage -ImagePath $srcWim | Where-Object { $_.ImageName -eq 'Wi
 if (-not $pro) { throw "no 'Windows 11 Pro' index in $srcWim" }
 if (Test-Path $proWim) { Remove-Item -Force $proWim }
 # fast compression here: this file is re-exported with max compression after servicing
-Export-WindowsImage -SourceImagePath $srcWim -SourceIndex $pro.ImageIndex -DestinationImagePath $proWim -CompressionType fast | Out-Null
+Export-WindowsImage -SourceImagePath $srcWim -SourceIndex $pro.ImageIndex -DestinationImagePath $proWim -CompressionType fast -ScratchDirectory $scratch | Out-Null
 Remove-Item -Force $srcWim
 $info = Get-WindowsImage -ImagePath $proWim -Index 1
 $winVer = "$($info.Version)"
@@ -63,7 +66,7 @@ Write-Host ("  {0} {1} (index {2} of the Microsoft image), {3:N2} GB" -f $info.I
 Lap 'exported'
 
 Write-Step 'Mount install image'
-Mount-WindowsImage -ImagePath $proWim -Index 1 -Path $mount | Out-Null
+Mount-WindowsImage -ImagePath $proWim -Index 1 -Path $mount -ScratchDirectory $scratch | Out-Null
 $saved = $false
 try {
     Write-Step 'Inject drivers into install.wim'
@@ -73,7 +76,8 @@ try {
         foreach ($r in $p.inject_roots) {
             Lap "Add-WindowsDriver $($p.id) <- $r"
             $errs = $null
-            $res = @(Add-WindowsDriver -Path $mount -Driver $r -Recurse -ErrorAction SilentlyContinue -ErrorVariable errs)
+            $recurse = -not ($r -like '*.inf')
+            $res = @(Add-WindowsDriver -Path $mount -Driver $r -Recurse:$recurse -ScratchDirectory $scratch -ErrorAction SilentlyContinue -ErrorVariable errs)
             foreach ($e in @($errs)) { if ($e) { Write-Warning ("    {0}" -f $e.Exception.Message) } }
             Write-Host ("    {0} driver packages added" -f $res.Count)
             if ($res.Count -eq 0) { throw "no driver from $r could be added to the image" }
@@ -89,13 +93,13 @@ try {
     foreach ($d in $display) { Write-Host ("  Display: {0} {1} {2} {3}" -f $d.ProviderName, $d.Version, $d.Date, (Split-Path -Leaf $d.OriginalFileName)) }
     Lap 'drivers injected'
 
-    Write-Step 'Pre-apply the zero-egress lockdown to the offline image'
+    Write-Step 'Pre-apply the privacy + model-containment registry settings to the offline image'
     $stage = Join-Path $WorkDir 'stack'
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     Invoke-Native (Get-SevenZip) @('x', '-y', '-bso0', '-bsp0', "-o$stage", $StackZip) | Out-Null
     $stackSrc = Join-Path $stage 'lecore-plus-windows-stack'
     & (Join-Path $stackSrc 'lockdown.ps1') -OfflineImage $mount
-    Lap 'offline lockdown applied'
+    Lap 'offline settings applied'
 
     Write-Step 'Stage the stack installer (runs in the specialize pass) + SetupComplete.cmd fallback'
     $scripts = Join-Path $mount 'Windows\Setup\Scripts'
@@ -114,7 +118,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $scripts 'lecore-plus\zero-image.json'), $bi, (New-Object Text.UTF8Encoding($false)))
 
     Write-Step 'Commit install image'
-    Dismount-WindowsImage -Path $mount -Save | Out-Null
+    Dismount-WindowsImage -Path $mount -Save -ScratchDirectory $scratch | Out-Null
     $saved = $true
     Lap 'committed'
 } finally {
@@ -123,7 +127,7 @@ try {
 
 Write-Step 'Re-export install.wim (max compression, drops superseded blobs)'
 if (Test-Path $finalWim) { Remove-Item -Force $finalWim }
-Export-WindowsImage -SourceImagePath $proWim -SourceIndex 1 -DestinationImagePath $finalWim -CompressionType max | Out-Null
+Export-WindowsImage -SourceImagePath $proWim -SourceIndex 1 -DestinationImagePath $finalWim -CompressionType max -ScratchDirectory $scratch | Out-Null
 Remove-Item -Force $proWim
 Write-Host ("  install.wim {0:N2} GB" -f ((Get-Item $finalWim).Length / 1GB))
 Lap 'exported'
@@ -133,13 +137,13 @@ Write-Step 'boot.wim (Windows Setup, index 2): storage drivers so Setup sees the
 $bootWim = Join-Path $isoDir 'sources\boot.wim'
 $setupIdx = (Get-WindowsImage -ImagePath $bootWim | Where-Object { $_.ImageName -match 'Setup' } | Select-Object -First 1).ImageIndex
 if (-not $setupIdx) { $setupIdx = 2 }
-Mount-WindowsImage -ImagePath $bootWim -Index $setupIdx -Path $bootMount | Out-Null
+Mount-WindowsImage -ImagePath $bootWim -Index $setupIdx -Path $bootMount -ScratchDirectory $scratch | Out-Null
 $bootSaved = $false
 try {
     $n = 0
     foreach ($p in $drv.packages) {
         if ($p.inject_boot) {
-            foreach ($r in $p.inject_roots) { $n += @(Add-WindowsDriver -Path $bootMount -Driver $r -Recurse -ErrorAction Stop).Count }
+            foreach ($r in $p.inject_roots) { $n += @(Add-WindowsDriver -Path $bootMount -Driver $r -Recurse:(-not ($r -like '*.inf')) -ScratchDirectory $scratch -ErrorAction Stop).Count }
         }
         if ($p.boot_classes -and @($p.boot_classes).Count) {
             foreach ($r in $p.inject_roots) {
@@ -147,7 +151,7 @@ try {
                     $text = [IO.File]::ReadAllText($_.FullName)
                     $class = ([regex]::Match($text, '(?im)^\s*Class\s*=\s*"?([A-Za-z0-9_]+)')).Groups[1].Value
                     if (@($p.boot_classes) -contains $class) {
-                        try { $n += @(Add-WindowsDriver -Path $bootMount -Driver $_.FullName -ErrorAction Stop).Count; Write-Host "    + $class $($_.Name)" }
+                        try { $n += @(Add-WindowsDriver -Path $bootMount -Driver $_.FullName -ScratchDirectory $scratch -ErrorAction Stop).Count; Write-Host "    + $class $($_.Name)" }
                         catch { Write-Warning "    boot.wim: $($_.Exception.Message)" }
                     }
                 }
@@ -155,7 +159,7 @@ try {
         }
     }
     Write-Host "  $n driver packages added to boot.wim index $setupIdx"
-    Dismount-WindowsImage -Path $bootMount -Save | Out-Null
+    Dismount-WindowsImage -Path $bootMount -Save -ScratchDirectory $scratch | Out-Null
     $bootSaved = $true
 } finally {
     if (-not $bootSaved) { Dismount-WindowsImage -Path $bootMount -Discard -ErrorAction SilentlyContinue | Out-Null }
@@ -165,7 +169,7 @@ Lap 'boot.wim done'
 Write-Step 'install.wim -> sources (split to .swm when > 4 GB, so the USB can be FAT32)'
 $sources = Join-Path $isoDir 'sources'
 if ((Get-Item $finalWim).Length -ge 4GB - 1) {
-    Split-WindowsImage -ImagePath $finalWim -SplitImagePath (Join-Path $sources 'install.swm') -FileSize 3800 -CheckIntegrity | Out-Null
+    Split-WindowsImage -ImagePath $finalWim -SplitImagePath (Join-Path $sources 'install.swm') -FileSize 3800 -CheckIntegrity -ScratchDirectory $scratch | Out-Null
     Remove-Item -Force $finalWim
     Get-ChildItem $sources -Filter 'install*.swm' | ForEach-Object { Write-Host ("  {0} {1:N2} GB" -f $_.Name, ($_.Length / 1GB)) }
 } else {

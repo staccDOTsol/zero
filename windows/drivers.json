@@ -1,5 +1,5 @@
 {
-  "comment": "Driver packages injected offline into install.wim (and, where marked, boot.wim index 2 so Windows Setup sees the disk). Official vendor URLs only, pinned by sha256. Zero egress means Windows Update never runs on the laptop, so every driver the laptop needs must be in the image.",
+  "comment": "Driver packages injected offline into install.wim (and, where marked, boot.wim index 2 so Windows Setup sees the disk). Official vendor URLs only, pinned by sha256. The laptop works fully from first boot, with or without a network; Windows Update may add newer drivers later.",
   "targets": {
     "hp-zbook-ultra-g1a": {
       "title": "HP ZBook Ultra G1a (AMD Ryzen AI Max+ 395, Radeon 8060S)",
@@ -87,6 +87,8 @@
           "sha256_source": "NVIDIA publishes none; streamed hash (byte count matched Content-Length)",
           "extract": "7z",
           "inject_dirs": ["Display.Driver", "HDAudio", "NVPCF", "PPC"],
+          "display_only_matching_gpu": true,
+          "display_only_matching_gpu_reason": "Display.Driver holds 20 display INFs, one per OEM family; each would add a full ~1.3 GB copy to the driver store. Only the INF that lists this laptop's GPU (VEN_10DE&DEV_2C38, Lenovo subsystems) is injected.",
           "inject_install": true
         }
       ]
