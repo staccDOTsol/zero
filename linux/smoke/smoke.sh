@@ -77,8 +77,10 @@ systemctl is-active -q nftables.service && ok "nftables.service active" || bad "
 for u in lecore-llama lecore-chat; do
   P=$(systemctl show "$u.service" -p User -p IPAddressDeny -p IPAddressAllow -p RestrictAddressFamilies -p Requires | tr '\n' ' ')
   echo "$u.service: $P"
-  echo "$P" | grep -q "User=$u" && echo "$P" | grep -q 'IPAddressDeny=0.0.0.0/0 ::/0' \
-    && echo "$P" | grep -q 'IPAddressAllow=127.0.0.0/8 ::1/128' && echo "$P" | grep -q 'Requires=.*nftables.service' \
+  DENY=$(systemctl show -p IPAddressDeny --value "$u.service" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')
+  ALLOW=$(systemctl show -p IPAddressAllow --value "$u.service" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')
+  echo "$P" | grep -q "User=$u" && [ "$DENY" = "0.0.0.0/0 ::/0 " ] && [ "$ALLOW" = "127.0.0.0/8 ::1/128 " ] \
+    && systemctl show -p Requires --value "$u.service" | grep -qw nftables.service \
     && ok "$u.service: dedicated user, IPAddressDeny=any, IPAddressAllow=localhost, requires the nftables rules" \
     || bad "$u.service confinement properties: $P"
 done
