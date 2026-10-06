@@ -59,7 +59,9 @@ jobs:
           set -euo pipefail
           GIB=1073741824
           MB=$(python3 golden/lib/catalog.py summary "$TIER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bytes"])')
-          NEW=$(( ($(stat -c %s "$WORK/zero.img") + MB + 4 * GIB + GIB - 1) / GIB * GIB ))
+          # base + the models + 6 GiB; the downloads run as root, so ext4's 5% root reserve is usable too
+          # (the image stays as small as it can be: the root grows to fill the NVMe on the first boot)
+          NEW=$(( ($(stat -c %s "$WORK/zero.img") + MB + 6 * GIB + GIB - 1) / GIB * GIB ))
           truncate -s "$NEW" "$WORK/zero.img"
           sgdisk -e "$WORK/zero.img" >/dev/null
           LOOP=$(sudo losetup -f --show -P "$WORK/zero.img"); sudo udevadm settle || sleep 2
@@ -74,10 +76,10 @@ jobs:
         run: |
           set -euo pipefail
           C="$WORK/root/var/lib/lecore-plus/.golden-download"
-          sudo mkdir -p "$C" && sudo chown "$USER" "$C"
+          sudo mkdir -p "$C"
           python3 golden/lib/catalog.py aria2 "$TIER" "$C" --provision-layout > "$WORK/aria2.list"
           for attempt in 1 2 3; do
-            aria2c -i "$WORK/aria2.list" -j 6 -x 16 -s 16 -k 64M --file-allocation=falloc -c \
+            sudo aria2c -i "$WORK/aria2.list" -j 6 -x 16 -s 16 -k 64M --file-allocation=falloc -c \
               --auto-file-renaming=false --allow-overwrite=true --check-integrity=true \
               --max-tries=20 --retry-wait=10 --connect-timeout=30 --timeout=120 \
               --summary-interval=300 --console-log-level=warn --download-result=hide && break
@@ -86,14 +88,14 @@ jobs:
           # provision/linux-add-models.sh trusts a cache file whose <file>.sha256 holds the catalog sha256
           # and is newer than the file (aria2c has just checked every sha256)
           python3 golden/lib/catalog.py plan "$TIER" | while IFS=$'\t' read -r _ repo path _ _ sha _; do
-            echo "$sha" > "$C/$repo/$path.sha256"
+            echo "$sha" | sudo tee "$C/$repo/$path.sha256" >/dev/null
           done
-          du -sh "$C"; df -h "$WORK"
+          sudo du -sh "$C"; df -h "$WORK" "$WORK/root"
       - name: Into place with provision/linux-add-models.sh (moved within the image, zero-models.json, default model)
         run: |
           set -euo pipefail
           C="$WORK/root/var/lib/lecore-plus/.golden-download"
-          sudo -E provision/linux-add-models.sh --all "$TIER" --target "$WORK/root" --cache "$C" --move --no-verify-target
+          sudo -E provision/linux-add-models.sh --all "$TIER" --target "$WORK/root" --cache "$C" --move --no-verify-target --reserve-gb 0
           sudo rm -rf "$C"
           sudo umount "$WORK/root"; sudo e2fsck -fn "$(lsblk -lnpo NAME,PARTLABEL "$LOOP" | awk '$2=="zero-root"{print $1}')"
           sudo losetup -d "$LOOP"
