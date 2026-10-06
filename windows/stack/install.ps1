@@ -361,7 +361,13 @@ try {
         Say 'lockdown SKIPPED (-SkipLockdown)'
     } else {
         Say 'applying the Zero model containment (lockdown.ps1)'
-        & (Join-Path $Src 'lockdown.ps1') -InstallBootTask
+        try { & (Join-Path $Src 'lockdown.ps1') -InstallBootTask }
+        catch {
+            # The stack is installed; the boot-time task (or the next run of lockdown.ps1) re-applies the
+            # firewall part. Fail loudly outside Windows Setup.
+            Say "lockdown.ps1 FAILED: $($_.Exception.Message)"
+            if ($Phase -notin 'specialize', 'setupcomplete') { throw }
+        }
     }
     Say 'done'
 } finally {
