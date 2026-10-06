@@ -101,13 +101,13 @@ boot() { # SMP MEM_G SECUREBOOT(0|1) -> 0 done, 1 failed, 2 the VM died before t
   pid=$!; t0=$SECONDS
   while kill -0 "$pid" 2>/dev/null; do
     if grep -aq ZERO_GOLDEN_DONE "$LOG" 2>/dev/null; then sleep 40; kill -0 "$pid" 2>/dev/null && kill "$pid"; rc=0; break; fi
-    if [ $((SECONDS - t0)) -ge 900 ] && ! grep -aq ZERO_GOLDEN_STARTED "$LOG" 2>/dev/null; then say "the check never started (15 min)"; kill "$pid"; break; fi
+    if [ $((SECONDS - t0)) -ge 900 ] && ! grep -aq ZERO_GOLDEN_STARTED "$LOG" 2>/dev/null; then say "the check never started (15 min)"; kill "$pid"; rc=2; break; fi
     if [ $((SECONDS - t0)) -ge 7200 ]; then say "TIMEOUT"; kill "$pid"; break; fi
     sleep 5
   done
   wait "$pid" 2>/dev/null || true
   cat "$OUT/qemu-stderr.log" 2>/dev/null
-  if [ "$rc" != 0 ] && ! grep -aq ZERO_GOLDEN_STARTED "$LOG" 2>/dev/null && [ $((SECONDS - t0)) -lt 300 ]; then
+  if [ "$rc" != 0 ] && ! grep -aq ZERO_GOLDEN_STARTED "$LOG" 2>/dev/null; then
     say "the VM stopped after $((SECONDS - t0)) s, before the check started; serial tail:"
     tail -c 2000 "$LOG" | tr -d '\r' | sed 's/\x1b\[[0-9;=]*[A-Za-z]//g' | tail -n 15
     rc=2
@@ -116,12 +116,11 @@ boot() { # SMP MEM_G SECUREBOOT(0|1) -> 0 done, 1 failed, 2 the VM died before t
 }
 # As the laptop ships first. No -no-reboot: OVMF with SMM (Secure Boot) resets once on the first boot
 # of a large-memory VM, and with -no-reboot QEMU would exit there. If the VM still dies before the
-# check starts: a smaller VM with Secure Boot, then Secure Boot off. The report says which one ran.
+# check starts (within 15 min), once more with Secure Boot off. The report says which one ran.
 SMP=$(nproc); [ "$SMP" -gt 32 ] && SMP=32
 MEM=$(( HOSTMEM * 6 / 10 )); [ "$MEM" -gt 96 ] && MEM=96
 BRC=2
 boot "$SMP" "$MEM" "$SB" && BRC=0 || BRC=$?
-if [ "$BRC" = 2 ] && [ "$SB" = 1 ]; then boot 16 64 1 && BRC=0 || BRC=$?; fi
 if [ "$BRC" = 2 ]; then say "retrying with Secure Boot off"; boot "$SMP" "$MEM" 0 && BRC=0 || BRC=$?; fi
 rm -f "$OV" "$OUT/vars.fd" "$SOCK"
 sed -n '/ZERO GOLDEN IMAGE FIRST BOOT/,$p' "$LOG" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' > "$OUT/first-boot.txt"

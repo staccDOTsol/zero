@@ -371,7 +371,8 @@ else
 fi
 }
 # A laptop fresh from imaging: a firmware with no boot entries. Secure Boot on (Microsoft keys), as the
-# laptops ship; if that VM dies before the check starts, once more with Secure Boot off.
+# laptops ship; if the check does not start there (VM died, or nothing within 25 min), once more with
+# Secure Boot off.
 vboot() { # name secureboot(0|1)
   overlay
   new_identity   # a "new laptop"
@@ -387,8 +388,9 @@ vboot() { # name secureboot(0|1)
 }
 VSB=1; T1=$SECONDS
 vboot verify 1 || VERIFY=FAIL
-if ! grep -aq ZERO_VERIFY_STARTED "$LOGS/verify-serial.log" && [ $((SECONDS - T1)) -lt 600 ]; then
-  say "the Secure Boot VM stopped after $((SECONDS - T1)) s before the check started; retrying with Secure Boot off"
+if ! grep -aq ZERO_VERIFY_STARTED "$LOGS/verify-serial.log"; then
+  say "the Secure Boot VM ended after $((SECONDS - T1)) s without starting the check; retrying with Secure Boot off"
+  cp "$LOGS/verify-serial.log" "$LOGS/verify-sb-serial.log" 2>/dev/null || true
   VERIFY=PASS; VSB=0
   vboot verify 0 || VERIFY=FAIL
 fi
