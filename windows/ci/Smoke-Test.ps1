@@ -152,7 +152,14 @@ try {
     $icd = Join-Path $vkDir 'mesa\x64\lvp_icd.x86_64.json'
     & icacls.exe $vkDir /grant '*S-1-5-19:(OI)(CI)RX' /T /C /Q | Out-Null
     $null = Invoke-Quiet { & reg.exe add 'HKLM\SOFTWARE\Khronos\Vulkan\Drivers' /v $icd /t REG_DWORD /d 0 /f }
-    $devs = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices } | Out-String
+    Write-Host ("  mesa files: " + ((Get-ChildItem -Recurse -File (Join-Path $vkDir 'mesa') | ForEach-Object { "$($_.Name) $($_.Length)" }) -join ', '))
+    Write-Host ("  icd json: " + (Get-Content -Raw $icd))
+    $vkinfo = Join-Path (Join-Path $vkDir 'loader') (($vk.loader.dll -replace '/', '\') -replace 'vulkan-1\.dll$', 'vulkaninfo.exe')
+    $env:VK_LOADER_DEBUG = 'error,warn,driver'
+    Write-Host (Invoke-Quiet { & $vkinfo --summary } | Select-Object -First 60 | Out-String)
+    Remove-Item Env:\VK_LOADER_DEBUG
+    $devs = Invoke-Quiet { & (Join-Path $root 'llama\llama-server.exe') --list-devices -lv 4 } | Out-String
+    Write-Host $devs
     Check 'llama.cpp Vulkan backend sees a Vulkan device (Mesa lavapipe, CI only)' ($devs -match 'Vulkan\d') (($devs -split "`n" | Where-Object { $_ -match 'Vulkan|llvmpipe' }) -join ' / ')
     $mark = (Get-Content (Join-Path $logs 'lecore-llama.out.log')).Count
     Restart-Service lecore-llama
