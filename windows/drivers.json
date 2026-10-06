@@ -1,0 +1,95 @@
+{
+  "comment": "Driver packages injected offline into install.wim (and, where marked, boot.wim index 2 so Windows Setup sees the disk). Official vendor URLs only, pinned by sha256. Zero egress means Windows Update never runs on the laptop, so every driver the laptop needs must be in the image.",
+  "targets": {
+    "hp-zbook-ultra-g1a": {
+      "title": "HP ZBook Ultra G1a (AMD Ryzen AI Max+ 395, Radeon 8060S)",
+      "tiers": ["pro", "max"],
+      "oem_model": "Zero Pro / Zero Max",
+      "iso_label": "ZERO_W11_HP",
+      "gpu_device_ids": ["VEN_1002&DEV_1586"],
+      "packages": [
+        {
+          "id": "hp-sp168475",
+          "role": "oem-pack",
+          "vendor": "HP",
+          "name": "HP ZBook Ultra G1a MWS Windows 11 Driver Pack (23H2/24H2/25H2), platform 8D01",
+          "version": "4.00 A 1 (2025-12-18)",
+          "url": "https://ftp.hp.com/pub/softpaq/sp168001-168500/sp168475.exe",
+          "bytes": 1137349240,
+          "sha256": "cf3c87f234708b6e502177e68d10be3590562c5259471d0c931e939fd89966bb",
+          "sha256_source": "HP HPClientDriverPackCatalog.cab + sp168475.cva (matches streamed hash)",
+          "extract": "hp-softpaq",
+          "inject_install": true,
+          "boot_classes": ["SCSIAdapter", "HDC"]
+        },
+        {
+          "id": "amd-adrenalin-26.8.1",
+          "role": "gpu",
+          "vendor": "AMD",
+          "name": "AMD Software: Adrenalin Edition 26.8.1 (WHQL, Recommended) for Windows 11, package -b (Ryzen AI Max+ 395 / Radeon 8060S product page)",
+          "version": "26.8.1 (2026-08-20)",
+          "url": "https://drivers.amd.com/drivers/whql-amd-software-adrenalin-edition-26.8.1-win11-b.exe",
+          "bytes": 930653064,
+          "sha256": "",
+          "sha256_source": "AMD publishes none; pinned from the first CI download",
+          "headers": { "Referer": "https://www.amd.com/" },
+          "headers_reason": "drivers.amd.com redirects requests without a Referer to amd.com/en/resources/support-articles/faqs/Download-Incomplete.html, which tells download-manager users to send an HTTP referrer.",
+          "extract": "7z",
+          "inject_dirs": ["Packages\\Drivers"],
+          "inject_install": true
+        }
+      ]
+    },
+    "lenovo-p16-gen3": {
+      "title": "Lenovo ThinkPad P16 Gen 3 (Intel Core Ultra 9 275HX, NVIDIA RTX PRO 5000 Blackwell Laptop GPU)",
+      "tiers": ["ultra"],
+      "oem_model": "Zero Ultra",
+      "iso_label": "ZERO_W11_LENOVO",
+      "gpu_device_ids": ["VEN_10DE&DEV_2C38"],
+      "packages": [
+        {
+          "id": "lenovo-sccm-25h2-202608",
+          "role": "oem-pack",
+          "vendor": "Lenovo",
+          "name": "ThinkPad P16 Gen 3 (21RQ/21RR) / T16g Gen 3 SCCM driver pack, Windows 11 25H2",
+          "version": "Package 04 Rev 01 (2026-08)",
+          "url": "https://download.lenovo.com/pccbbs/mobiles/tp_t16gg3_p16g3_mt21v5-21v6_mt21rq_21rr_w1164_25h2_202608.exe",
+          "bytes": 2006159544,
+          "sha256": "31c038e797cd687db5132da8fa48a3b357107089e8c5108b81f9399c77a5e5fd",
+          "sha256_source": "Lenovo catalogv2.xml crc attribute (SHA-256; matches streamed hash)",
+          "extract": "inno",
+          "inject_install": true,
+          "boot_classes": ["SCSIAdapter", "HDC"]
+        },
+        {
+          "id": "lenovo-winpe-t16g3",
+          "role": "winpe-pack",
+          "vendor": "Lenovo",
+          "name": "ThinkPad T16g Gen 3 / P16 Gen 3 WinPE driver pack (Intel RST VMD, Serial IO, LAN)",
+          "version": "2026-03-12",
+          "url": "https://download.lenovo.com/pccbbs/mobiles/t16ggen3_mt21v5-21v6_winpe.exe",
+          "bytes": 3806448,
+          "sha256": "5c78d5b76385ee6021414d63a617c1ad3c02b7c885c59a8b6193139f58157e34",
+          "sha256_source": "Lenovo support page DS578711 (matches streamed hash)",
+          "extract": "inno",
+          "inject_install": false,
+          "inject_boot": true
+        },
+        {
+          "id": "nvidia-rtx-597.16",
+          "role": "gpu",
+          "vendor": "NVIDIA",
+          "name": "NVIDIA RTX Enterprise driver R595 U9 597.16 WHQL DCH (Quadro_Certified, desktop + notebook, Windows 10/11)",
+          "version": "597.16 (2026-09-22)",
+          "url": "https://us.download.nvidia.com/Windows/Quadro_Certified/597.16/597.16-quadro-rtx-desktop-notebook-win10-win11-64bit-international-dch-whql.exe",
+          "bytes": 746271960,
+          "sha256": "ce369512425ff8c973307d85c5e0ec0615d7a1a777f33aeefb7b22da1cbdbd15",
+          "sha256_source": "NVIDIA publishes none; streamed hash (byte count matched Content-Length)",
+          "extract": "7z",
+          "inject_dirs": ["Display.Driver", "HDAudio", "NVPCF", "PPC"],
+          "inject_install": true
+        }
+      ]
+    }
+  }
+}

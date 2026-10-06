@@ -1,0 +1,298 @@
+# Zero (leCore+) Windows factory image.
+#   push (windows/**)      -> stack zip + smoke test on a Windows runner
+#   workflow_dispatch full -> + Windows 11 Pro ISOs per target, published as ≤1.9 GiB parts to the
+#                             PRIVATE release windows-YYYYMMDD-<shortsha>
+#   workflow_dispatch probe-> + resolve the ISO link and download/extract every driver package (prints sha256)
+# The zero-egress lockdown is NEVER applied to the runner (only -WhatIf, and offline to the mounted image).
+name: windows-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'windows/**'
+      - 'provision/windows-*'
+      - '.github/workflows/windows-image.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'full = stack + smoke + ISOs + release; stack = stack + smoke; probe = stack + smoke + ISO link + driver downloads (no image)'
+        type: choice
+        options: [full, stack, probe]
+        default: full
+      targets:
+        description: 'Comma-separated targets (windows/drivers.json)'
+        default: 'hp-zbook-ultra-g1a,lenovo-p16-gen3'
+      iso_url:
+        description: 'Optional: URL (or self-hosted-runner path) of the official Microsoft Windows 11 x64 English ISO, used instead of Fido'
+        default: ''
+      iso_sha256:
+        description: 'Optional: sha256 of that ISO (otherwise checked against the hash Microsoft publishes)'
+        default: ''
+      publish:
+        description: 'Upload to the GitHub Release windows-YYYYMMDD-<shortsha>'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-image-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.m.outputs.mode }}
+      tag: ${{ steps.m.outputs.tag }}
+      targets: ${{ steps.m.outputs.targets }}
+      publish: ${{ steps.m.outputs.publish }}
+    steps:
+      - id: m
+        shell: bash
+        env:
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'stack' }}
+          TARGETS: ${{ inputs.targets || 'hp-zbook-ultra-g1a,lenovo-p16-gen3' }}
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.mode == 'full' }}
+        run: |
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "tag=windows-$(date -u +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "targets=$(python3 -c 'import json,os; print(json.dumps([t.strip() for t in os.environ["TARGETS"].split(",") if t.strip()]))')" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+  stack:
+    needs: meta
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build lecore-plus-windows-stack.zip
+        run: |
+          & .\windows\build\Build-StackPayload.ps1 -OutDir "$env:GITHUB_WORKSPACE\out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stack
+          path: out/
+          retention-days: 14
+
+  smoke:
+    needs: stack
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stack
+          path: out
+      - name: Smoke test (install with lockdown skipped, both services, test GGUF, lockdown -WhatIf)
+        run: |
+          & .\windows\ci\Smoke-Test.ps1 -StackZip "$env:GITHUB_WORKSPACE\out\lecore-plus-windows-stack.zip" -Report "$env:GITHUB_WORKSPACE\out\smoke-report.md"
+      - name: Collect logs
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force out\smoke-logs | Out-Null
+          Copy-Item -Recurse -Force "$env:ProgramData\leCore+\logs\*" out\smoke-logs -ErrorAction SilentlyContinue
+          Copy-Item -Force "$env:ProgramFiles\leCore+\services\*.xml" out\smoke-logs -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke
+          path: |
+            out/smoke-report.md
+            out/lockdown-whatif.txt
+            out/smoke-logs/
+          retention-days: 14
+
+  iso:
+    needs: meta
+    if: needs.meta.outputs.mode != 'stack' && inputs.iso_url == ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-2022]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the official Windows 11 ISO link (Fido)
+        run: |
+          & .\windows\build\Get-WindowsIso.ps1 -Resolve -UrlFile "$env:GITHUB_WORKSPACE\iso-url-${{ matrix.os }}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iso-url-${{ matrix.os }}
+          path: iso-url-*
+          retention-days: 2
+
+  drivers-probe:
+    needs: meta
+    if: needs.meta.outputs.mode == 'probe'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.meta.outputs.targets) }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner disk
+        run: |
+          . .\windows\build\common.ps1; Show-Disk 'runner'
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors | Format-List
+          "RAM {0:N1} GB" -f ((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+      - name: Download + extract drivers (prints sha256 of unpinned entries)
+        run: |
+          & .\windows\build\Get-Drivers.ps1 -Target ${{ matrix.target }} -WorkDir C:\zb\drivers -AllowUnpinned
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drivers-${{ matrix.target }}
+          path: C:/zb/drivers/${{ matrix.target }}/drivers-report.json
+          retention-days: 14
+
+  release:
+    needs: [meta, stack, smoke]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stack
+          path: out
+      - name: Create release + upload the stack zip
+        shell: bash
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "Zero Windows images $TAG" \
+              --notes "Building (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          fi
+          gh release upload "$TAG" out/lecore-plus-windows-stack.zip out/lecore-plus-windows-stack.zip.sha256 --clobber
+
+  image:
+    needs: [meta, stack, smoke, iso, release]
+    if: >-
+      always() && needs.meta.outputs.mode == 'full' && needs.smoke.result == 'success' &&
+      (needs.release.result == 'success' || needs.release.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.meta.outputs.targets) }}
+    runs-on: windows-2025
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stack
+          path: out
+      - uses: actions/download-artifact@v4
+        if: inputs.iso_url == ''
+        with:
+          pattern: iso-url-*
+          merge-multiple: true
+          path: isourl
+      - name: Runner
+        run: |
+          . .\windows\build\common.ps1; Show-Disk 'start'
+          "CPU {0} logical, RAM {1:N1} GB" -f (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors, ((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+      - name: Windows ADK Deployment Tools (oscdimg)
+        run: |
+          & .\windows\build\Install-Adk.ps1
+      - name: Official Windows 11 ISO
+        env:
+          ISO_URL: ${{ inputs.iso_url }}
+          ISO_SHA256: ${{ inputs.iso_sha256 }}
+        run: |
+          $url = $env:ISO_URL
+          if (-not $url) {
+            $f = Get-ChildItem isourl -Filter 'iso-url-*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.error' } | Select-Object -First 1
+            if (-not $f) {
+              Get-ChildItem isourl -Filter '*.error' -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName }
+              throw 'BLOCKER: no Windows 11 ISO link (Microsoft refused every runner; see the iso jobs). Re-run with the iso_url input.'
+            }
+            $url = (Get-Content -Raw $f.FullName).Trim()
+          }
+          & .\windows\build\Get-WindowsIso.ps1 -Download -IsoUrl $url -IsoSha256 "$env:ISO_SHA256" -OutIso C:\zb\win11.iso
+      - name: Drivers
+        run: |
+          & .\windows\build\Get-Drivers.ps1 -Target ${{ matrix.target }} -WorkDir C:\zb\drivers
+      - name: Build the ISO
+        run: |
+          & .\windows\build\Build-Image.ps1 -Target ${{ matrix.target }} -Iso C:\zb\win11.iso -StackZip "$env:GITHUB_WORKSPACE\out\lecore-plus-windows-stack.zip" `
+            -DriversRoot C:\zb\drivers\${{ matrix.target }} -WorkDir C:\zb\img -OutDir C:\zb\out -Tag "$env:TAG"
+          Remove-Item -Force C:\zb\win11.iso
+          Remove-Item -Recurse -Force C:\zb\drivers
+      - name: Split into ≤1.9 GiB parts + SHA256SUMS, upload to the release
+        run: |
+          $tag = if ('${{ needs.meta.outputs.publish }}' -eq 'true') { $env:TAG } else { '' }
+          & .\windows\build\Publish-Parts.ps1 -Iso $env:ZERO_ISO -Target ${{ matrix.target }} -Tag $tag
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-${{ matrix.target }}
+          path: |
+            C:/zb/out/*.json
+            C:/zb/out/*.csv
+            C:/zb/out/SHA256SUMS-*.txt
+          retention-days: 30
+
+  finalize:
+    needs: [meta, release, image]
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          path: img
+      - uses: actions/download-artifact@v4
+        with:
+          name: stack
+          path: out
+      - name: SHA256SUMS + release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          { cat out/lecore-plus-windows-stack.zip.sha256; cat img/*/SHA256SUMS-*.txt 2>/dev/null || true; } | tr -d '\r' > SHA256SUMS
+          cat SHA256SUMS
+          python3 - <<'PY' > notes.md
+          import glob, json, os
+          tag = os.environ["TAG"]
+          run = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          print(f"# Zero Windows factory images `{tag}`\n")
+          print("PRIVATE: contains Microsoft's Windows installer, only for imaging licensed Zero laptops. Never make this repo public.\n")
+          print("Reassemble each ISO from its parts (`copy /b a.part01+a.part02+... a.iso` or `cat a.iso.part* > a.iso`), check SHA256SUMS, then follow windows/README.md (make-usb.ps1 / Rufus).\n")
+          for f in sorted(glob.glob("img/*/build-info-*.json")):
+              b = json.load(open(f, encoding="utf-8-sig"))
+              print(f"## {b['target']}: {b['title']} (tiers: {', '.join(b['tiers'])})\n")
+              print(f"- ISO `{b['iso']['file']}`: {b['iso']['bytes']:,} bytes, sha256 `{b['iso']['sha256']}`")
+              print(f"- {b['windows']['edition']} {b['windows']['version']} (from Microsoft's `{b['windows']['iso']}`)")
+              for d in b["drivers"]:
+                  print(f"- {d['vendor']}: {d['name']} {d['version']} (sha256 `{d['sha256']}`)")
+              print(f"- Display drivers in the image: {'; '.join(b['display_drivers_in_image'])}\n")
+          print("## Stack\n\n`lecore-plus-windows-stack.zip`: llama.cpp b11430 Vulkan, leCore 21abb4f, Python 3.13.16 embeddable, offline wheelhouse, zero-egress lockdown. See windows/README.md.\n")
+          print(f"Built by {run}")
+          PY
+          cat notes.md
+          gh release upload "$TAG" SHA256SUMS --clobber
+          gh release edit "$TAG" --notes-file notes.md
