@@ -87,6 +87,10 @@ Check 'install.ps1 -SkipLockdown -TestMode (offline payload, no pip downloads)' 
     ("{0:N0}s; services: lecore-chat={1}, lecore-llama={2}; account={3}" -f $sw.Elapsed.TotalSeconds,
         $(if ($chatSvc) { $chatSvc.Status } else { 'missing' }), $(if ($llamaSvc) { $llamaSvc.Status } else { 'missing' }),
         $(if ($chatSvc) { (Get-CimInstance Win32_Service -Filter "Name='lecore-chat'").StartName } else { '-' }))
+$rtFiles = @($stackJson.msvc_runtime.files)
+$rtMissing = @($rtFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $root "llama\$_")) })
+$rtVer = ($rtFiles | ForEach-Object { $p = Join-Path $root "llama\$_"; if (Test-Path -LiteralPath $p) { "$_ $((Get-Item -LiteralPath $p).VersionInfo.FileVersion)" } }) -join ', '
+Check 'MSVC runtime shipped app-local next to llama-server.exe (a clean Windows 11 has none)' ($rtMissing.Count -eq 0) $(if ($rtMissing) { 'missing: ' + ($rtMissing -join ', ') } else { $rtVer })
 $pyv = & (Join-Path $root 'python\python.exe') -X utf8 -c "import sys, numpy, flask, matplotlib, nltk; print(sys.version.split()[0], 'numpy', numpy.__version__, 'flask', flask.__version__, 'nltk', nltk.__version__)"
 Check 'embedded Python + wheels importable' ($LASTEXITCODE -eq 0) "$pyv"
 $nl = & (Join-Path $root 'python\python.exe') -X utf8 -c "import os; os.environ['NLTK_DATA']=r'$root\nltk_data'; import nltk; print(nltk.download('gutenberg'), nltk.download('not-a-real-package', quiet=True)); from nltk.corpus import gutenberg; print(len(gutenberg.fileids()))"
@@ -159,6 +163,11 @@ $k5 = Get-Code 'http://127.0.0.1:8080/health'
 Check 'llama-server requires the key: no key / wrong key -> 401, key -> 200 (/health stays public)' ($k1 -eq '401' -and $k2 -eq '401' -and $k3 -eq '401' -and $k4 -eq '200' -and $k5 -eq '200') "no key /v1/models $k1, no key /v1/chat/completions $k2, wrong key $k3, key $k4, /health $k5"
 $cmdLines = @(Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | ForEach-Object { $_.CommandLine })
 Check 'the key is not on llama-server''s command line (--api-key-file)' ($cmdLines.Count -ge 1 -and -not @($cmdLines | Where-Object { $_ -match $key }).Count -and @($cmdLines | Where-Object { $_ -match '--api-key-file' }).Count) (($cmdLines | Select-Object -First 1) -replace [regex]::Escape($key), '<KEY>')
+# The runner has the redistributable in System32 too; the loader searches the program's folder first, so the
+# modules of the running llama-server must be the shipped app-local copies (and so new enough for this build).
+$rtLoaded = @(Get-Process -Name llama-server -ErrorAction SilentlyContinue | ForEach-Object { $_.Modules } |
+    Where-Object { $rtFiles -contains $_.ModuleName.ToLowerInvariant() } | ForEach-Object { "$($_.ModuleName)=$($_.FileName)" } | Sort-Object -Unique)
+Check 'llama-server runs on the shipped app-local MSVC runtime (not the runner''s System32 copies)' ($rtLoaded.Count -eq $rtFiles.Count -and -not @($rtLoaded | Where-Object { $_ -notlike "*=$root\llama\*" }).Count) ($rtLoaded -join '; ')
 
 # 6. chat -> model rung ---------------------------------------------------------------------------
 # Evidence that the chat on :7860 reached the model on :8080: llama-server processes new tasks while the

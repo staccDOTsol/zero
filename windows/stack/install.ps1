@@ -220,6 +220,20 @@ try {
         Reset-Dir $llamaDir
         Expand-Zip (Join-Path $payload $manifest.llama_cpp.asset) $llamaDir
         if (-not (Test-Path (Join-Path $llamaDir 'llama-server.exe'))) { throw 'llama-server.exe missing after extract' }
+        # The MSVC runtime app-local: llama.cpp's binaries import vcruntime140.dll / vcruntime140_1.dll /
+        # msvcp140.dll, which neither the release zip nor a clean Windows 11 install carries (the loader then
+        # ends llama-server with 0xC0000135, STATUS_DLL_NOT_FOUND). The program's own folder is searched first.
+        Say "MSVC runtime $($manifest.msvc_runtime.redistributable) -> $llamaDir (app-local)"
+        foreach ($f in $manifest.msvc_runtime.files.PSObject.Properties.Name) {
+            Copy-Item -Force (Join-Path (Join-Path $payload $manifest.msvc_runtime.dir) $f) (Join-Path $llamaDir $f)
+        }
+        # Self-check: the loader must resolve every static import (this is what the golden first boot found missing)
+        $vOut = Join-Path $env:TEMP 'lecore-plus-llama-version.out'; $vErr = Join-Path $env:TEMP 'lecore-plus-llama-version.err'
+        $p = Start-Process -FilePath (Join-Path $llamaDir 'llama-server.exe') -ArgumentList '--version' -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $vOut -RedirectStandardError $vErr
+        $vText = ((Get-Content -LiteralPath $vOut, $vErr -ErrorAction SilentlyContinue) -join ' ').Trim()
+        if ($p.ExitCode -ne 0) { throw ("llama-server.exe --version exited with {0} (0x{0:X8}); a DLL it imports is missing? {1}" -f $p.ExitCode, $vText) }
+        Say "llama-server.exe loads: $vText"
 
         Say "Python $($manifest.python.version) embeddable -> $pyDir"
         Reset-Dir $pyDir

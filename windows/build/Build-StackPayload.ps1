@@ -27,6 +27,44 @@ Write-Step "llama.cpp $($pins.llama_cpp.tag) Vulkan x64"
 Invoke-PinnedDownload -Url $pins.llama_cpp.url -Dest (Join-Path $payload $pins.llama_cpp.asset) `
     -Sha256 $pins.llama_cpp.sha256 -Bytes $pins.llama_cpp.bytes | Out-Null
 
+Write-Step 'MSVC runtime (app-local next to llama-server.exe)'
+# The llama.cpp release zip does not carry vcruntime140.dll / vcruntime140_1.dll / msvcp140.dll (its binaries
+# import them) and a clean Windows 11 install has none of them. Microsoft's redistributable link always
+# serves the current version, so (like the ADK) it is checked by Microsoft's Authenticode signature instead
+# of a pinned sha256; the version goes into manifest.json and every file's sha256 into its file list.
+function Assert-MicrosoftSigned([string]$Path) {
+    $s = Get-AuthenticodeSignature -FilePath $Path
+    Write-Host "  $Path : $($s.Status) $($s.SignerCertificate.Subject)"
+    if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw "$Path is not validly signed by Microsoft" }
+}
+$vcDir = Join-Path $WorkDir 'vcredist'
+New-Item -ItemType Directory -Force -Path $vcDir | Out-Null
+$vcSetup = Join-Path $vcDir 'vc_redist.x64.exe'
+Write-Host "  GET $($pins.msvc_runtime.url)"
+& curl.exe --fail --location --silent --show-error --retry 5 --retry-delay 10 --output $vcSetup $pins.msvc_runtime.url
+if ($LASTEXITCODE -ne 0) { throw "Visual C++ Redistributable download failed (curl exit $LASTEXITCODE)" }
+Assert-MicrosoftSigned $vcSetup
+$vcVersion = [version](Get-Item -LiteralPath $vcSetup).VersionInfo.ProductVersion
+Write-Host "  Visual C++ Redistributable $vcVersion sha256 $(Get-Sha256 $vcSetup)"
+# Installs (or upgrades) the runtime on the runner: 0 = done, 1638 = the same or a newer one is already
+# there, 3010 = done, reboot wanted (not needed to read the files).
+$p = Start-Process -FilePath $vcSetup -ArgumentList @('/install', '/quiet', '/norestart') -PassThru -Wait
+Write-Host "  vc_redist.x64.exe /install exit $($p.ExitCode)"
+if ($p.ExitCode -notin 0, 1638, 3010) { throw "vc_redist.x64.exe failed ($($p.ExitCode))" }
+$vcPayload = Join-Path $payload 'msvc-runtime'
+New-Item -ItemType Directory -Force -Path $vcPayload | Out-Null
+$vcInstalled = [ordered]@{}
+foreach ($f in $pins.msvc_runtime.files) {
+    $src = Join-Path $env:SystemRoot "System32\$f"
+    if (-not (Test-Path -LiteralPath $src)) { throw "$src missing after the redistributable install" }
+    Assert-MicrosoftSigned $src
+    $fv = [version](Get-Item -LiteralPath $src).VersionInfo.FileVersion.Split(' ')[0]
+    if ($fv -lt $vcVersion) { throw "$src is $fv, older than the redistributable $vcVersion" }
+    Copy-Item -Force $src (Join-Path $vcPayload $f)
+    $vcInstalled[$f] = "$fv"
+    Write-Host "  $f $fv"
+}
+
 Write-Step "Python $($pins.python.version) embeddable"
 Invoke-PinnedDownload -Url $pins.python.url -Dest (Join-Path $payload $pins.python.asset) `
     -Sha256 $pins.python.sha256 -Bytes $pins.python.bytes | Out-Null
@@ -75,6 +113,7 @@ $manifest = [ordered]@{
     built_utc     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     source_commit = $env:GITHUB_SHA
     llama_cpp     = [ordered]@{ tag = $pins.llama_cpp.tag; asset = $pins.llama_cpp.asset }
+    msvc_runtime  = [ordered]@{ redistributable = "$vcVersion"; dir = 'msvc-runtime'; files = $vcInstalled }
     python        = [ordered]@{ version = $pins.python.version; asset = $pins.python.asset; pth = $pins.python.pth }
     winsw         = [ordered]@{ version = $pins.winsw.version; asset = $pins.winsw.asset }
     lecore        = [ordered]@{ commit = $pins.lecore.commit; tree = $tree; version = $pins.lecore.version; asset = "lecore-$short.zip" }

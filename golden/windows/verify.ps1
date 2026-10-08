@@ -1,11 +1,16 @@
 <#
   Zero golden image, TEST ONLY: runs inside a throwaway copy-on-write overlay of the finished image
-  booted in QEMU (golden/windows/build.sh, step "verify"). The build host adds one line to the
-  overlay's SetupComplete.cmd that calls this file from C:\zero-verify\; nothing of it is in the image.
+  booted in QEMU (golden/windows/build.sh, step "verify"). The build host adds one line at the hook
+  point of the overlay's copy of golden/windows/firstboot.ps1, which the image's own startup task
+  (\Zero\Zero golden first boot) runs, and that line starts this file from C:\zero-verify\ as its own
+  process; nothing of it is in the image.
 
   The overlay disk is the size of the laptop's NVMe (1 TB Pro, 2 TB Max/Ultra), larger than the image,
   exactly as when an imaging team writes the image onto the drive. This is the image's FIRST boot:
-  specialize, then (here) SetupComplete, before OOBE.
+  the specialize pass (reboot), then the oobeSystem pass, SetupComplete.cmd and the startup task, while
+  Windows Welcome (OOBE) waits for the owner on the screen. The VM has no GPU and no Vulkan loader
+  (vulkan-1.dll comes from the laptop's GPU driver), so llama.cpp's Vulkan backend (loaded at run time,
+  GGML_BACKEND_DL) is skipped and the model runs on the CPU backend; the laptop's GPU path is not covered.
 
   Results go to COM1 (read by the build host) and C:\zero-verify\report.txt:
     VERIFY PASS|FAIL|INFO: <check> -- <evidence>
@@ -67,10 +72,6 @@ try {
     Info 'Secure Boot' $sb
 
     # --- generalized image, first boot ----------------------------------------------------------------
-    $state = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState
-    $setup = Get-ItemProperty 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
-    $oobe = [int]$(if ($setup -and $setup.PSObject.Properties['OOBEInProgress']) { $setup.OOBEInProgress } else { 0 })
-    Check 'generalized image on its first boot: specialize done, OOBE waiting for the owner' ($state -eq 'IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE' -or $oobe -eq 1) "ImageState $state, OOBEInProgress $oobe"
     $golden = Get-Content -Raw -LiteralPath (Join-Path $data 'golden.json') | ConvertFrom-Json
     $sid = (Get-LocalUser | Select-Object -First 1).SID.AccountDomainSid.Value
     Check 'new machine SID (sysprep /generalize)' ($sid -and $sid -ne $golden.build_machine_sid) "this boot $sid, build VM $($golden.build_machine_sid)"
@@ -87,6 +88,27 @@ try {
     $deadline = (Get-Date).AddMinutes(20)
     while (((-not (Test-Path $done)) -or (Get-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero golden first boot' -ErrorAction SilentlyContinue)) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 10 }
     Check 'golden first-boot task ran and removed itself' ((Test-Path $done) -and -not (Get-ScheduledTask -TaskPath '\Zero\' -TaskName 'Zero golden first boot' -ErrorAction SilentlyContinue)) (Tail (Join-Path $logs 'golden-firstboot.log') 12)
+    # Windows Setup is done with its passes (ImageState: the specialize pass ran on this boot's predecessor,
+    # the oobeSystem pass on this one) and OOBE (Windows Welcome) has not been completed: what Windows itself
+    # answers through kernel32 OOBEComplete (0 until the owner finishes OOBE), or HKLM\SYSTEM\Setup
+    # OOBEInProgress = 1, or Windows Welcome (msoobe.exe) on the screen. ImageState alone cannot tell: it is
+    # IMAGE_STATE_COMPLETE as soon as the oobeSystem pass ends, while OOBE is still waiting for the owner.
+    # Polled briefly: this runs from the startup task, seconds into the boot, before Welcome may be up.
+    $state = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState
+    try { Add-Type -Namespace ZeroVerify -Name Oobe -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool OOBEComplete(out int isComplete);' } catch { }
+    $oobeDeadline = (Get-Date).AddMinutes(3)
+    do {
+        $oobeDone = 'n/a'
+        try { $c = 0; if ([ZeroVerify.Oobe]::OOBEComplete([ref]$c)) { $oobeDone = [int]$c } } catch { }
+        $setup = Get-ItemProperty 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue
+        $oobe = [int]$(if ($setup -and $setup.PSObject.Properties['OOBEInProgress']) { $setup.OOBEInProgress } else { 0 })
+        $welcome = @(Get-Process -Name 'msoobe' -ErrorAction SilentlyContinue).Count
+        $oobePending = ($oobeDone -eq 0) -or ($oobe -eq 1) -or ($welcome -ge 1)
+        if ($oobePending) { break }
+        Start-Sleep -Seconds 10
+    } while ((Get-Date) -lt $oobeDeadline)
+    $du0 = [bool](Get-LocalUser -Name 'defaultuser0' -ErrorAction SilentlyContinue)
+    Check 'generalized image on its first boot: Setup passes done, OOBE waiting for the owner' (($state -eq 'IMAGE_STATE_COMPLETE' -or $state -eq 'IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE') -and $oobePending) "ImageState $state; OOBEComplete() $oobeDone; OOBEInProgress $oobe; msoobe.exe running $welcome; OOBE account defaultuser0 present $du0"
     $c = Get-Partition -DriveLetter C
     $disk = Get-Disk -Number $c.DiskNumber
     $max = (Get-PartitionSupportedSize -DriveLetter C).SizeMax
@@ -142,6 +164,9 @@ try {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $health = Wait-Http 'http://127.0.0.1:8080/health' 1500
     Check 'default model loaded by itself at boot (llama-server /health)' ($null -ne $health) ("{0:N0}s after the check started; {1}" -f $sw.Elapsed.TotalSeconds, $(if ($health) { $health.Content } else { Tail (Join-Path $logs 'lecore-llama.out.log') 20 }))
+    # which ggml backends llama-server loaded (no GPU and no Vulkan loader in this VM: the CPU backend; a laptop logs Vulkan0)
+    $backends = @([regex]::Matches((Tail (Join-Path $logs 'lecore-llama.out.log') 20000), '(?m)^.*(load_backend|Vulkan0|ggml_vulkan).*$') | ForEach-Object { $_.Value.Trim() } | Select-Object -Unique -Last 8)
+    Info 'ggml backends loaded by llama-server (CPU expected in this VM)' ($backends -join ' / ')
     $cmd = @(Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | ForEach-Object { $_.CommandLine })
     Check 'llama-server serves the default model file' (@($cmd | Where-Object { $_ -match [regex]::Escape("models\$($expect.default_file)") }).Count -ge 1) (($cmd | Select-Object -First 1) -replace '[0-9a-f]{64}', '<KEY>')
     $k1 = Get-Code $curl @('http://127.0.0.1:8080/v1/models')

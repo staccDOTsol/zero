@@ -7,6 +7,15 @@
     "bytes": 33337688,
     "sha256": "fea0653c6eab7e3e1abfa4785d033db831818b483d6912e372d2c1a99babed0a"
   },
+  "msvc_runtime": {
+    "comment": "The llama.cpp Windows binaries import the MSVC runtime (llama-server.exe -> vcruntime140.dll; llama-server-impl.dll, llama.dll, ggml*.dll -> msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll), which the release zip does not carry and a clean Windows 11 install does not have (llama-server exited with 0xC0000135 STATUS_DLL_NOT_FOUND on the golden image's first boot). Shipped app-local next to llama-server.exe (Microsoft's documented app-local deployment of the redistributable files). Taken from Microsoft's current Visual C++ Redistributable (the link always serves the latest version, so it is verified by Microsoft's Authenticode signature, like the ADK, and the version is recorded in manifest.json); the latest runtime is backward compatible with every toolset, including the one llama.cpp's release is built with.",
+    "url": "https://aka.ms/vs/18/release/vc_redist.x64.exe",
+    "files": [
+      "vcruntime140.dll",
+      "vcruntime140_1.dll",
+      "msvcp140.dll"
+    ]
+  },
   "python": {
     "version": "3.13.16",
     "asset": "python-3.13.16-embed-amd64.zip",
