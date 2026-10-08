@@ -9,6 +9,7 @@ on:
     inputs:
       windows_tag: { description: "Windows base release tag (staged to the object store, base/windows/<tag>/)", required: true }
       tiers: { description: "JSON list of tiers", default: '["pro","max","ultra"]' }
+      laptop: { description: "windows/drivers.json target to build the image for; empty = the tier's default laptop (hp-zbook-ultra-g1a for pro/max, lenovo-p16-gen3 for ultra). Another target, e.g. asus-rog-flow-z13-gz302ea, needs its ISO in the staged release and is named zero-<tier>-windows-<image_name>.img.zst", default: "" }
       upload: { description: "upload the image to S3", type: boolean, default: true }
 permissions: { contents: read }
 jobs:
@@ -29,6 +30,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.STORE_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
       TIER: ${{ matrix.tier }}
       WIN_TAG: ${{ inputs.windows_tag }}
+      LAPTOP: ${{ inputs.laptop }}
     steps:
       - uses: actions/checkout@v4
       - name: Machine
@@ -47,6 +49,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$TIER" in pro|max) T=hp-zbook-ultra-g1a ;; ultra) T=lenovo-p16-gen3 ;; esac
+          [ -z "$LAPTOP" ] || T=$LAPTOP   # the laptop input overrides the tier's default laptop
+          echo "laptop (windows/drivers.json target): $T"
           . "$GITHUB_WORKSPACE/golden/lib/store.sh"
           cd "$WORK"
           store s3 cp "$(store_uri "base/windows/$WIN_TAG/SHA256SUMS-$T.txt")" - --only-show-errors | tr -d '\r' > sums.txt
@@ -62,12 +66,12 @@ jobs:
         run: |
           UP=--no-upload; [ "${{ inputs.upload }}" = true ] && UP=
           sudo -E golden/windows/build.sh --tier "$TIER" --iso "$ISO" --work "$WORK/w" \
-            --prefix "windows/$WIN_TAG" --base-tag "$WIN_TAG" $UP
+            --prefix "windows/$WIN_TAG" --base-tag "$WIN_TAG" ${LAPTOP:+--laptop "$LAPTOP"} $UP
       - name: Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: golden-windows-${{ matrix.tier }}-logs
+          name: golden-windows-${{ matrix.tier }}${{ inputs.laptop && format('-{0}', inputs.laptop) || '' }}-logs
           path: |
             ${{ env.WORK }}/w/logs/
             ${{ env.WORK }}/w/manifest.json

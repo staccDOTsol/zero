@@ -10,6 +10,7 @@ nothing is added by hand.
 |---|---|---|---|---|
 | `zero-pro-linux.img.zst` | HP ZBook Ultra G1a, 64 GB | 8 (≈ 174 GB), default Qwen3.8 27B UD-Q4_K_XL | ≈ 193 GB | 256 GB (ships on 1 TB) |
 | `zero-max-linux.img.zst` | HP ZBook Ultra G1a, 128 GB | 15 (≈ 798 GB), default Qwen3.8 27B Q8_0 | ≈ 817 GB | 1 TB (ships on 2 TB) |
+| (same two files) | ASUS ROG Flow Z13 (2025) GZ302EA, 64 GB → Pro, 128 GB → Max (**untested on hardware**) | as above | as above | as above |
 | `zero-ultra-linux.img.zst` | Lenovo ThinkPad P16 Gen 3, 128 GB | 15 (≈ 719 GB), default Qwen3.8 27B UD-Q4_K_XL | ≈ 738 GB | 1 TB (ships on 2 TB) |
 
 The exact byte sizes and sha256 values are in each image's manifest (`zero-<tier>-linux.manifest.json`).
@@ -42,7 +43,8 @@ version the image was built from.
 1. Make a live USB from any current Linux (Debian 13 or Ubuntu 24.04 "Try" mode both work and both
    boot with Secure Boot on). Put the `.img.zst` and its manifest on a second stick or a network share
    (a Max image is about 800 GB: use an external SSD or an NFS/SMB share).
-2. Boot the laptop from USB. On the HP ZBook Ultra G1a press **F9** at power-on. On the Lenovo
+2. Boot the laptop from USB. On the HP ZBook Ultra G1a press **F9** at power-on; on the ASUS ROG Flow
+   Z13 hold **Esc** at power-on for the boot menu. On the Lenovo
    ThinkPad P16 Gen 3 press **F12**.
 3. Find the internal disk. It is the NVMe, not the USB stick:
    ```sh

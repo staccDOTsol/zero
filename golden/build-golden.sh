@@ -2,7 +2,13 @@
 # golden/build-golden.sh -- build all Zero golden images (Linux + Windows x Pro/Max/Ultra) in one command.
 #
 #   golden/build-golden.sh [--linux-tag T] [--windows-tag T] [--tiers '["pro","max","ultra"]']
-#                          [--os linux|windows|both] [--no-upload] [--wait]
+#                          [--os linux|windows|both] [--laptop TARGET] [--no-upload] [--wait]
+#
+#   --laptop: a windows/drivers.json target for the Windows images instead of each tier's default laptop
+#             (hp-zbook-ultra-g1a for pro/max, lenovo-p16-gen3 for ultra), e.g.
+#             --os windows --tiers '["pro","max"]' --laptop asus-rog-flow-z13-gz302ea
+#             -> zero-{pro,max}-windows-asus-rog-flow-z13.img.zst. The Linux image is the same for every
+#             laptop of a tier, so the option does not apply to it.
 #
 # Runs from a checkout of staccDOTsol/lecore-plus (the source of truth) with `gh` logged in to an
 # account that can run workflows in staccDOTsol/lecore-plus and kekloldyormarket/zero-golden.
@@ -24,13 +30,14 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SRC=$(cd "$HERE/.." && pwd)
 SOURCE_REPO=staccDOTsol/lecore-plus
 BUILD_REPO=kekloldyormarket/zero-golden
-LINUX_TAG="" WINDOWS_TAG="" TIERS='["pro","max","ultra"]' OS=both UPLOAD=true WAIT=0
+LINUX_TAG="" WINDOWS_TAG="" TIERS='["pro","max","ultra"]' OS=both UPLOAD=true WAIT=0 LAPTOP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --linux-tag) LINUX_TAG=$2; shift 2 ;;
     --windows-tag) WINDOWS_TAG=$2; shift 2 ;;
     --tiers) TIERS=$2; shift 2 ;;
     --os) OS=$2; shift 2 ;;
+    --laptop) LAPTOP=$2; shift 2 ;;
     --no-upload) UPLOAD=false; shift ;;
     --wait) WAIT=1; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
@@ -85,7 +92,7 @@ if [ "$OS" != windows ]; then
   echo "golden-linux:   $(latest_run "$BUILD_REPO" golden-linux.yml)"
 fi
 if [ "$OS" != linux ]; then
-  gh workflow run golden-windows.yml -R "$BUILD_REPO" -f windows_tag="$WINDOWS_TAG" -f tiers="$TIERS" -f upload="$UPLOAD"
+  gh workflow run golden-windows.yml -R "$BUILD_REPO" -f windows_tag="$WINDOWS_TAG" -f tiers="$TIERS" -f upload="$UPLOAD" ${LAPTOP:+-f laptop="$LAPTOP"}
   echo "golden-windows: $(latest_run "$BUILD_REPO" golden-windows.yml)"
 fi
 if [ "$WAIT" = 1 ]; then

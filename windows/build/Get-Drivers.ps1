@@ -24,6 +24,19 @@ function Read-Inf([string]$Path) {
     [pscustomobject]@{ Path = $Path; Class = $class; DriverVer = $ver; Text = $text }
 }
 
+function Find-SevenZipSignature([byte[]]$Bytes) {
+    # Offset of the first 7-Zip archive signature (37 7A BC AF 27 1C) in $Bytes, or -1.
+    $sig = [byte[]](0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C)
+    $i = [Array]::IndexOf([byte[]]$Bytes, [byte]$sig[0], [int]0)
+    while ($i -ge 0 -and $i -le $Bytes.Length - $sig.Length) {
+        $hit = $true
+        for ($k = 1; $k -lt $sig.Length; $k++) { if ($Bytes[$i + $k] -ne $sig[$k]) { $hit = $false; break } }
+        if ($hit) { return $i }
+        $i = [Array]::IndexOf([byte[]]$Bytes, [byte]$sig[0], [int]($i + 1))
+    }
+    return -1
+}
+
 function Expand-Package($pkg, [string]$exe, [string]$dest) {
     if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
@@ -41,6 +54,24 @@ function Expand-Package($pkg, [string]$exe, [string]$dest) {
             # Lenovo: "<pack>.exe /VERYSILENT /DIR=<dir> /EXTRACT=YES" = extract only (Lenovo package descriptors)
             $p = Start-Process -FilePath $exe -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dest`"", '/EXTRACT="YES"') -PassThru -Wait
             Write-Host "  Inno extractor exit $($p.ExitCode)"
+        }
+        'asus-7z' {
+            # ASUS: a signed wrapper .exe (NSIS, or an Inno Setup 6.1 stub whose script runs pnputil) around
+            # ONE embedded 7-Zip archive that holds the plain INF driver folders (+ Install.bat). The archive
+            # is carved at its signature (37 7A BC AF 27 1C) and unpacked with 7-Zip; nothing from the
+            # package is executed. (7-Zip opens the NSIS wrappers directly, but not the Inno ones, and the
+            # Inno stubs have no extract-only switch; the carved archive is the same payload in both cases.)
+            $7z = Get-SevenZip
+            $bytes = [IO.File]::ReadAllBytes($exe)
+            $off = Find-SevenZipSignature $bytes
+            if ($off -lt 0) { throw "no embedded 7-Zip archive in $exe" }
+            $payload = "$exe.payload.7z"
+            $fs = [IO.File]::Create($payload)
+            try { $fs.Write($bytes, $off, $bytes.Length - $off) } finally { $fs.Close() }
+            $bytes = $null
+            Write-Host ("  embedded 7-Zip archive at offset {0:N0}, {1:N0} bytes" -f $off, (Get-Item -LiteralPath $payload).Length)
+            Invoke-Native $7z @('x', '-y', '-bso0', '-bsp0', "-o$dest", $payload) | Out-Null
+            Remove-Item -Force -LiteralPath $payload
         }
         default { throw "unknown extract method $($pkg.extract)" }
     }

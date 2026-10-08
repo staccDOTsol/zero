@@ -6,7 +6,12 @@ One x86_64 UEFI disk image for all three Zero laptops:
 |---|---|---|---|
 | Zero Pro | HP ZBook Ultra G1a | AMD Ryzen AI Max+ 395, Radeon 8060S iGPU (gfx1151, "Strix Halo") | 64 GB unified |
 | Zero Max | HP ZBook Ultra G1a | same | 128 GB unified |
+| Zero Pro / Max | ASUS ROG Flow Z13 (2025) GZ302EA (**untested on hardware**) | same silicon as the ZBook (Strix Halo, Radeon 8060S); MediaTek MT7925 Wi-Fi 7 | 64 GB (Pro) / 128 GB (Max) unified |
 | Zero Ultra | Lenovo ThinkPad P16 Gen 3 | Intel Core Ultra 9 275HX (Arrow Lake HX) + NVIDIA RTX PRO 5000 Blackwell laptop GPU, 24 GB | 128 GB DDR5 |
+
+The same `zero-<tier>-linux.img.zst` goes on the HP and on the ASUS of a tier: nothing in the image is
+specific to one of them. See [ASUS ROG Flow Z13](#asus-rog-flow-z13-2025) for what the Z13 needs and what
+is not verified.
 
 The image boots to a GNOME (Wayland) desktop. On the first boot GNOME's setup assistant creates the
 owner's account; no user or password is baked in. At every login a Zero app window opens on the local
@@ -133,7 +138,24 @@ of RAM: about 54 GB on the Pro and 109 GB on the Max. The limit is written to
 before any GPU driver loads. In the initramfs, `00-zero-gpu-memory` runs ahead of udev (CI checks
 the order). In the booted system, `zero-gpu-memory.service` runs before udev starts. To opt out,
 create `/etc/lecore-plus/no-gpu-memory-tuning` and add `zero.no_gpu_memory_tuning` to the kernel
-command line.
+command line. The limit is computed from `MemTotal` in `/proc/meminfo` at every boot, so it applies
+unchanged to any Strix Halo laptop (the ASUS ROG Flow Z13 included): 64 GB → about 54 GB, 128 GB →
+about 109 GB.
+
+### ASUS ROG Flow Z13 (2025)
+
+The Z13 (GZ302EA) has the same Ryzen AI Max+ 395 / Radeon 8060S as the ZBook, so the GPU, firmware
+(`gc_11_5_1_*`, `dcn_3_5_1`, `vcn_4_0_6`, `psp_14_0_x`), RADV and the TTM tuning above are the same
+story, and the image has nothing HP-specific: the HP-only piece in the package set is the Cirrus
+amplifier firmware in `firmware-misc-nonfree`, which is harmless on the Z13 (the Z13 also uses Cirrus
+CS35L51 amplifiers; whether its firmware/tuning is in linux-firmware 20260810 is **not verified**).
+Its Wi-Fi/Bluetooth is MediaTek MT7925 (`firmware-mediatek`, mt7925e; the 7.1 mt76 regressions are
+fixed in 7.2). Its keyboard folio, touchpad, fan key and RGB go through `hid-asus` / `asus-nb-wmi`:
+the upstream Z13 2025 patches landed in 6.15 (keyboard init, fan key, folio RGB) and a DMI quirk for
+the GZ302EAC variant in March 2026, all in the 7.2.6 kernel here. **None of this has been run on a
+Z13**: the image boots in QEMU without any of that hardware. On the first Z13, check `journalctl -b`
+for `hid-asus`/`asus_wmi`, `Vulkan0` in the llama-server log, Wi-Fi, speakers, and Secure Boot
+(ASUS firmware ships Microsoft's keys, so the shim chain should work as on the HP; unverified).
 
 ## Zero egress
 
@@ -189,7 +211,8 @@ To check on a laptop: `sudo nft list table inet zero_egress` (the drop counters)
 - **Secure Boot OFF:** works on all three laptops. This is the minimum supported setup.
 - **Secure Boot ON, Zero Pro/Max (AMD):** works. The chain is Microsoft-signed `shim` → Debian-signed
   GRUB → Debian-signed kernel 7.2.6. amdgpu is an in-tree, signed module. CI boots the image with
-  Secure Boot enforced (OVMF with Microsoft keys) and checks `mokutil --sb-state`.
+  Secure Boot enforced (OVMF with Microsoft keys) and checks `mokutil --sb-state`. (Verified on the HP
+  ZBook Ultra G1a chain in CI; the ASUS ROG Flow Z13 should behave the same but is untested.)
 - **Secure Boot ON, Zero Ultra (NVIDIA): blocker.** The NVIDIA open modules are built by DKMS on
   the build host and are **unsigned**. DKMS does not sign in a chroot, and no shared signing key is
   shipped (that key would be the same on every laptop). With Secure Boot on, the kernel refuses to load `nvidia.ko`. The

@@ -20,16 +20,23 @@
 #   6. upload   raw sha256 + zstd stream to the object store (golden/lib/store.sh: any S3-compatible
 #               service, STORE_BUCKET / S3_ENDPOINT_URL), PREFIX/zero-<tier>-windows.img.zst + manifest
 #
-#   build.sh --tier pro|max|ultra --iso ZERO.iso --work DIR [--bucket B --prefix P] [--base-tag T]
-#            [--no-upload] [--keep]
+#   build.sh --tier pro|max|ultra --iso ZERO.iso --work DIR [--laptop TARGET] [--bucket B --prefix P]
+#            [--base-tag T] [--no-upload] [--keep]
+#
+# --laptop names the windows/drivers.json target the ISO was built for. Without it the tier's default
+# laptop is assumed (pro/max: hp-zbook-ultra-g1a, ultra: lenovo-p16-gen3) and the image is
+# zero-<tier>-windows.img.zst, as before. Another target that lists the tier (asus-rog-flow-z13-gz302ea)
+# gets zero-<tier>-windows-<image_name>.img.zst (+ .manifest.json, .verify.txt), so the default laptop's
+# image and the other laptop's image of the same tier can sit next to each other in the bucket.
 set -Eeuo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 CATALOG=$REPO/models/catalog.json
-TIER="" ISO="" WORK="" PREFIX="" BASE_TAG="" UPLOAD=1 KEEP=0
+TIER="" ISO="" WORK="" PREFIX="" BASE_TAG="" UPLOAD=1 KEEP=0 LAPTOP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --tier) TIER=$2; shift 2 ;;
+    --laptop) LAPTOP=$2; shift 2 ;;
     --iso) ISO=$(readlink -f "$2"); shift 2 ;;
     --work) WORK=$2; shift 2 ;;
     --bucket) export STORE_BUCKET=$2; shift 2 ;;
@@ -41,9 +48,36 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
-case "$TIER" in pro|max) TARGET=hp-zbook-ultra-g1a; VENDOR='Advanced Micro Devices|AMD' ;;
-                 ultra) TARGET=lenovo-p16-gen3; VENDOR='NVIDIA' ;;
+case "$TIER" in pro|max) DEFAULT_TARGET=hp-zbook-ultra-g1a ;;
+                 ultra) DEFAULT_TARGET=lenovo-p16-gen3 ;;
                  *) echo "--tier pro|max|ultra" >&2; exit 2 ;; esac
+TARGET=${LAPTOP:-$DEFAULT_TARGET}
+# The laptop must be a windows/drivers.json target that lists the tier. VENDOR is what verify.ps1 expects
+# in the display driver's provider (from the target's GPU PCI vendor id); IMAGE_NAME names the image of a
+# laptop other than the tier's default.
+CFG=$(python3 - "$REPO/windows/drivers.json" "$TARGET" "$TIER" 2>&1 <<'PY'
+import json, re, sys
+path, target, tier = sys.argv[1:4]
+targets = json.load(open(path, encoding="utf-8-sig"))["targets"]
+t = targets.get(target)
+if t is None:
+    sys.exit("laptop %s is not a target in %s (targets: %s)" % (target, path, ", ".join(targets)))
+if tier not in t["tiers"]:
+    sys.exit("laptop %s is not built for tier %s (its tiers: %s)" % (target, tier, ", ".join(t["tiers"])))
+vendors = {re.match(r"VEN_([0-9A-Fa-f]{4})", i).group(1).upper() for i in t["gpu_device_ids"]}
+regex = {"1002": "Advanced Micro Devices|AMD", "10DE": "NVIDIA"}
+if len(vendors) != 1 or not regex.get(next(iter(vendors))):
+    sys.exit("laptop %s: unknown GPU vendor in gpu_device_ids %s" % (target, t["gpu_device_ids"]))
+name = t.get("image_name") or target
+if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+    sys.exit("laptop %s: image_name %r must be lowercase letters, digits and dashes" % (target, name))
+print(regex[vendors.pop()])
+print(name)
+PY
+) || { echo "windows/drivers.json: $CFG" >&2; exit 2; }
+VENDOR=$(echo "$CFG" | sed -n 1p); IMAGE_NAME=$(echo "$CFG" | sed -n 2p)
+NAME=zero-$TIER-windows
+[ "$TARGET" = "$DEFAULT_TARGET" ] || NAME=zero-$TIER-windows-$IMAGE_NAME
 [ -f "$ISO" ] && [ -n "$WORK" ] || { echo "--iso and --work are required" >&2; exit 2; }
 [ "$UPLOAD" = 0 ] || [ -n "${STORE_BUCKET:-}" ] || { echo "STORE_BUCKET / --bucket (or --no-upload)" >&2; exit 2; }
 # shellcheck source=../lib/store.sh
@@ -52,7 +86,7 @@ case "$TIER" in pro|max) TARGET=hp-zbook-ultra-g1a; VENDOR='Advanced Micro Devic
 mkdir -p "$WORK"; WORK=$(cd "$WORK" && pwd)
 LOGS=$WORK/logs; CACHE=$WORK/model-cache; MNT=$WORK/mnt
 mkdir -p "$LOGS" "$CACHE" "$MNT"
-DISK=$WORK/zero-$TIER-windows.img
+DISK=$WORK/$NAME.img
 VARS=$WORK/ovmf-vars.fd
 OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
@@ -73,7 +107,7 @@ cleanup() {
   mountpoint -q "$MNT" && umount "$MNT"
   [ -n "$LOOP" ] && losetup -d "$LOOP"
   [ -e /dev/nbd0p1 ] && qemu-nbd -d /dev/nbd0 >/dev/null
-  pkill -f "zero-win-$TIER" 2>/dev/null
+  pkill -f "zero-win-$NAME" 2>/dev/null
   [ -n "${DL_PID:-}" ] && kill "$DL_PID" 2>/dev/null
 }
 trap cleanup EXIT
@@ -173,7 +207,7 @@ vm() {
   local log=$LOGS/$name-serial.log sock=$WORK/$name.qmp
   rm -f "$log" "$sock"; mkdir -p "$LOGS/shots"
   say "VM $name: start (timeout ${tmo}s)"
-  qemu-system-x86_64 -name "zero-win-$TIER-$name" -machine "${VM_MACHINE:-q35,accel=kvm}" ${VM_EXTRA:-} \
+  qemu-system-x86_64 -name "zero-win-$NAME-$name" -machine "${VM_MACHINE:-q35,accel=kvm}" ${VM_EXTRA:-} \
     -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time,hv_vpindex,hv_synic,hv_stimer,hv_frequencies \
     -smp "$smp" -m "${mem}G" \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="${VM_CODE:-$OVMF_CODE}" \
@@ -422,7 +456,7 @@ say "first-boot verification: $VERIFY"
 [ "$VERIFY" = PASS ] || die "first-boot verification failed (logs/verify-report.txt); the image is not uploaded"
 if [ "$UPLOAD" = 1 ]; then
   P=${PREFIX%/}
-  KEY=$P/zero-$TIER-windows.img.zst
+  KEY=$P/$NAME.img.zst
   say "streaming to $(store_uri "$KEY") ${S3_ENDPOINT_URL:+at $S3_ENDPOINT_URL }(raw sha256 + zstd)"
   store_tune
   tee >(sha256sum | awk '{print $1}' > "$WORK/raw.sha256") < "$DISK" | zstd -T0 -3 -c \
@@ -431,7 +465,7 @@ if [ "$UPLOAD" = 1 ]; then
   for _ in $(seq 1 300); do [ -s "$WORK/raw.sha256" ] && [ -s "$WORK/zst.sha256" ] && [ -s "$WORK/zst.bytes" ] && break; sleep 1; done
   python3 - "$WORK/manifest.json" <<PY
 import json, sys
-m = {"product": "Zero", "os": "windows", "tier": "$TIER", "laptop": "$TARGET",
+m = {"product": "Zero", "os": "windows", "tier": "$TIER", "laptop": "$TARGET", "image": "$NAME.img.zst",
      "format": "raw GPT disk image, zstd-compressed; write with: zstd -dc FILE | dd of=/dev/nvme0n1 bs=16M oflag=direct",
      "raw_bytes": $DISK_BYTES, "raw_sha256": open("$WORK/raw.sha256").read().strip(),
      "zst_bytes": int(open("$WORK/zst.bytes").read().strip()), "zst_sha256": open("$WORK/zst.sha256").read().strip(),
@@ -441,8 +475,8 @@ m = {"product": "Zero", "os": "windows", "tier": "$TIER", "laptop": "$TARGET",
      "model_sha256_check": open("$LOGS/models-sha256.txt").read().splitlines()[-1]}
 json.dump(m, open(sys.argv[1], "w"), indent=1)
 PY
-  store s3 cp "$WORK/manifest.json" "$(store_uri "$P/zero-$TIER-windows.manifest.json")" --only-show-errors
-  store s3 cp "$LOGS/verify-report.txt" "$(store_uri "$P/zero-$TIER-windows.verify.txt")" --only-show-errors
+  store s3 cp "$WORK/manifest.json" "$(store_uri "$P/$NAME.manifest.json")" --only-show-errors
+  store s3 cp "$LOGS/verify-report.txt" "$(store_uri "$P/$NAME.verify.txt")" --only-show-errors
   store s3 ls "$(store_uri "$P/")" --human-readable
   cat "$WORK/manifest.json"
 fi

@@ -10,6 +10,7 @@ inside; the user sees "Zero".
 |---|---|---|
 | `zero-hp-zbook-ultra-g1a-win11pro-<build>.iso` | HP ZBook Ultra G1a, AMD Ryzen AI Max+ 395, Radeon 8060S | Zero Pro, Zero Max |
 | `zero-lenovo-p16-gen3-win11pro-<build>.iso` | Lenovo ThinkPad P16 Gen 3, Core Ultra 9 275HX, RTX PRO 5000 Blackwell 24 GB | Zero Ultra |
+| `zero-asus-rog-flow-z13-gz302ea-win11pro-<build>.iso` | ASUS ROG Flow Z13 (2025) GZ302EA, AMD Ryzen AI Max+ 395, Radeon 8060S (**untested on hardware**) | Zero Pro, Zero Max |
 
 Built by [`windows/ci/windows-image.yml`](ci/windows-image.yml), which runs in the private, org-billed
 build repo `kekloldyormarket/zero-golden` (`golden/build-golden.sh` copies it there), and published to
@@ -35,6 +36,20 @@ This repo contains Microsoft's Windows installer. It is only for imaging license
     Edition** (Radeon 8060S, Vulkan) from drivers.amd.com.
   - Lenovo: *ThinkPad P16 Gen 3 SCCM driver pack, Windows 11 25H2* + the Lenovo WinPE pack (Intel RST /
     VMD, so Setup sees the NVMe disk) + **NVIDIA RTX Enterprise driver** (RTX PRO 5000 Blackwell, Vulkan).
+  - ASUS (ROG Flow Z13 2025, **untested on hardware**): ASUS publishes no driver pack, so the twelve
+    per-device packages of the model's Windows 11 download page are pinned one by one (listed with their
+    sha256 by ASUS's own support API, `rog.asus.com/support/webapi/ProductV2/GetPDDrivers`, and
+    re-hashed): AMD chipset (I2C, GPIO, PSP, PMF, SFH, ...), MediaTek MT7925 Wi-Fi 7 + Bluetooth, Realtek
+    ALC3251 audio with the Dolby wrappers, Cirrus CS35L51 SmartAMP, Dolby Atmos APO, ASUS Precision
+    TouchPad + keyboard-folio HID filters, ASUS System Control Interface v3 (hotkeys, power modes, MyASUS
+    services), Armoury Crate Control Interface, Parade USB4 retimer, Genesys card reader, AMD ISP camera
+    with the ROG tuning, Microsoft Effect Pack for the NPU; plus the same **AMD Adrenalin** package as the
+    HP (its display INF lists the Z13's `VEN_1002&DEV_1586` ASUS subsystem ids). Every ASUS package is a
+    signed wrapper `.exe` (NSIS, or an Inno Setup stub that would run `pnputil`) around one embedded 7-Zip
+    archive of plain INF folders; `Get-Drivers.ps1` (`extract: asus-7z`) carves that archive at its
+    signature and unpacks it with 7-Zip, so nothing from the package runs on the build runner. Left out
+    (applications, not drivers): MyASUS, Armoury Crate, Aura Wallpaper, Virtual Assistant, Smart Display
+    Control, ScreenXpert, GlideX. The NVMe needs no extra Setup driver (AMD, no RAID).
   - Both the OEM pack's GPU driver and the vendor's current GPU driver are in the driver store. Both
     list the laptop's exact PCI subsystem ID, so Windows picks the newer one: AMD 32.0.31041.1004
     (Adrenalin 26.8.1) over HP's 32.0.22018.5; NVIDIA 32.0.15.9716 (597.16, `nvltwi.inf`) over
@@ -82,7 +97,7 @@ Experience" customization: the ISO's own `autounattend.xml` already does that jo
 
 ## Install a laptop
 
-1. Boot the laptop from the stick (F9 on HP, F12 on Lenovo). Keep it **off the network**.
+1. Boot the laptop from the stick (F9 on HP, F12 on Lenovo, Esc on ASUS for the boot menu). Keep it **off the network**.
 2. Choose the internal NVMe disk; delete its partitions if it has an old install. Setup installs
    Windows 11 Pro, then the *specialize* pass installs the Zero stack and applies the model containment
    (`C:\Windows\Setup\Scripts\lecore-plus-specialize.log`, `C:\ProgramData\leCore+\logs\install-*.log`).
@@ -99,7 +114,8 @@ Shipped laptops get the **golden image** of their tier (`golden/`, see the top-l
 11 Pro installed from this ISO in a VM (the stack installed by this ISO's `install.ps1`), every
 catalog model of the tier written into `C:\ProgramData\leCore+\models\`, the tier default in
 `model.txt`, then generalized with `sysprep /generalize /oobe`. It is one raw disk image per tier
-(`zero-pro-windows`, `zero-max-windows` from the HP ISO, `zero-ultra-windows` from the Lenovo ISO)
+(`zero-pro-windows`, `zero-max-windows` from the HP ISO, `zero-ultra-windows` from the Lenovo ISO, and
+`zero-pro-windows-asus-rog-flow-z13`, `zero-max-windows-asus-rog-flow-z13` from the ASUS ISO)
 that the imaging team writes onto the NVMe. **Every model that fits a tier ships**; nothing is
 downloaded on the laptop. On its first boot each laptop specializes (new SID, its drivers) and runs
 the golden first-boot step (C: to the end of the disk, model file ACLs, a fresh API key, the Windows
@@ -132,9 +148,17 @@ writes the same files from Hugging Face, checking every sha256 against
 
 | | Service (WinSW wrapper, `NT AUTHORITY\LocalService`) | Listens | Path |
 |---|---|---|---|
-| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model> --offline --no-webui --cors-origins localhost --api-key-file …` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64) |
+| Zero model server | `lecore-llama` → `run-llama.ps1` → `llama-server --host 127.0.0.1 --port 8080 -ngl 999 -m <model> --offline --no-webui --cors-origins localhost --api-key-file …` | 127.0.0.1:8080 (`/v1`) | `C:\Program Files\leCore+\llama\` (llama.cpp b11430, Vulkan x64, plus the MSVC runtime app-local) |
 | Zero chat | `lecore-chat` → `lecore_plus_chat.py` → leCore `chat_server.py` | 127.0.0.1:7860 | `C:\Program Files\leCore+\lecore\` (leCore `21abb4f`, MIT) on Python 3.13.16 embeddable |
 
+- llama.cpp's Windows binaries import the MSVC runtime (`vcruntime140.dll`, `vcruntime140_1.dll`,
+  `msvcp140.dll`), which the release zip does not carry and a clean Windows 11 install does not have
+  (llama-server then dies at start with `0xC0000135`, STATUS_DLL_NOT_FOUND). The stack ships the three
+  files next to `llama-server.exe` (Microsoft's app-local deployment of the redistributable, taken from
+  the current `vc_redist.x64.exe`, Authenticode-checked at build time; the version is in `manifest.json`),
+  and `install.ps1` runs `llama-server.exe --version` to prove every import resolves. The Vulkan backend
+  (`ggml-vulkan.dll`) is loaded at run time and needs the loader `vulkan-1.dll` from the GPU driver; where
+  there is none (a VM) llama.cpp falls back to its CPU backend.
 - Both are automatic services with restart-on-failure. No model configured → `lecore-llama` is a clean
   no-op: nothing listens on :8080, it logs why and checks `model.txt` every 15 s, so a model added at
   imaging time starts by itself. After *changing* `model.txt`: `Restart-Service lecore-llama`. Extra
@@ -215,7 +239,8 @@ The ISO never erases a disk by itself. To make a fully unattended factory stick,
 
 `workflow_dispatch` the **windows-image** workflow in `kekloldyormarket/zero-golden` (`mode: full`). Inputs: `targets`, `iso_url` /
 `iso_sha256` (use your own copy of Microsoft's ISO if Microsoft refuses the runners), `publish`.
-`mode: probe` downloads and extracts every driver package and prints sha256s (to pin a new driver);
+`mode: probe` downloads and extracts every driver package and prints sha256s (to pin a new driver). `targets`
+defaults to all three (HP, Lenovo, ASUS ROG Flow Z13);
 pushes to `windows/**` run the stack build and the smoke test. Each image job: ADK Deployment Tools
 (oscdimg) → ISO → drivers → DISM servicing → oscdimg → split + upload, about 1–2 h per target.
 

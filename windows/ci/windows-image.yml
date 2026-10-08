@@ -26,7 +26,7 @@ on:
         default: full
       targets:
         description: 'Comma-separated targets (windows/drivers.json)'
-        default: 'hp-zbook-ultra-g1a,lenovo-p16-gen3'
+        default: 'hp-zbook-ultra-g1a,lenovo-p16-gen3,asus-rog-flow-z13-gz302ea'
       iso_url:
         description: 'Optional: URL (or self-hosted-runner path) of the official Microsoft Windows 11 x64 English ISO, used instead of Fido'
         default: ''
@@ -63,7 +63,7 @@ jobs:
         shell: bash
         env:
           MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'stack' }}
-          TARGETS: ${{ inputs.targets || 'hp-zbook-ultra-g1a,lenovo-p16-gen3' }}
+          TARGETS: ${{ inputs.targets || 'hp-zbook-ultra-g1a,lenovo-p16-gen3,asus-rog-flow-z13-gz302ea' }}
           PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.mode == 'full' }}
         run: |
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"

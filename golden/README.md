@@ -14,6 +14,16 @@ is downloaded on the laptop and nothing is added by hand.
 | `zero-pro-windows.img.zst` | HP ZBook Ultra G1a, 64 GB / 1 TB | 8, ≈ 174 GB | ≈ 243 GB |
 | `zero-max-windows.img.zst` | HP ZBook Ultra G1a, 128 GB / 2 TB | 15, ≈ 798 GB | ≈ 867 GB |
 | `zero-ultra-windows.img.zst` | Lenovo ThinkPad P16 Gen 3, 128 GB / 2 TB | 15, ≈ 719 GB | ≈ 788 GB |
+| `zero-pro-windows-asus-rog-flow-z13.img.zst` | ASUS ROG Flow Z13 (2025) GZ302EA, 64 GB / 1 TB (**untested on hardware**) | 8, ≈ 174 GB | ≈ 243 GB |
+| `zero-max-windows-asus-rog-flow-z13.img.zst` | ASUS ROG Flow Z13 (2025) GZ302EA, 128 GB / 2 TB (**untested on hardware**) | 15, ≈ 798 GB | ≈ 867 GB |
+
+The Pro and Max **Linux** images are the same file for the HP ZBook Ultra G1a and the ASUS ROG Flow Z13
+(2025) (same Strix Halo silicon; `linux/README.md`). The **Windows** image is per laptop, because it is
+installed from that laptop's Zero ISO (its own drivers): the HP ZBook Ultra G1a is each tier's default
+laptop and keeps the plain name; another laptop's image carries the laptop's `image_name` from
+`windows/drivers.json` (`--laptop` of `build-golden.sh` / `golden/windows/build.sh`, the `laptop` input
+of `golden-windows`), so both images of a tier sit side by side in the bucket. The Z13 images are built
+and verified exactly like the HP ones (QEMU first boot, below) but have not yet been written to a Z13.
 
 Default model on every tier: Qwen3.8 27B (Pro/Ultra UD-Q4_K_XL, Max Q8_0). Exact sizes and sha256
 values are in each image's manifest. Each image is smaller than its laptop's drive; on the first boot
@@ -60,6 +70,7 @@ volume is the generalized one, so the result is the same image. **This WIM route
 ```sh
 golden/build-golden.sh                    # newest base releases, all tiers, both OSes
 golden/build-golden.sh --os windows --tiers '["max"]' --windows-tag windows-YYYYMMDD-<sha>
+golden/build-golden.sh --os windows --tiers '["pro","max"]' --laptop asus-rog-flow-z13-gz302ea   # the Z13 images
 ```
 
 It runs from a checkout of `staccDOTsol/lecore-plus` (the source of truth) with `gh` logged in:
@@ -98,9 +109,10 @@ stack checks, first-boot task, per-machine state removed), sysprep → the model
    started by one line added to the overlay's copy of the first-boot script, so it runs from the
    image's own startup task during OOBE), checks:
    - generalized first boot: Linux root grows to the drive, machine-id and API key made, no user;
-     Windows `IMAGE_STATE_SPECIALIZE_RESEAL_TO_OOBE`, a new machine SID, no enabled account, the OOBE
-     answer file, C: grown to the drive, the first-boot task done, the laptop's drivers in the driver
-     store, Windows 11 Pro;
+     Windows: Setup's passes done (`ImageState` `IMAGE_STATE_COMPLETE`) with OOBE still waiting for the
+     owner (kernel32 `OOBEComplete()` = 0, or `OOBEInProgress` = 1, or `msoobe.exe` on the screen), a new
+     machine SID, no enabled account, the OOBE answer file, C: grown to the drive, the first-boot task
+     done, the laptop's drivers in the driver store, Windows 11 Pro;
    - `model.txt` / `/etc/lecore-plus/model` = the catalog default, the inventory lists every model,
      every file present with its catalog size, the default model's sha256 computed again by the booted
      OS (and Windows: model ACLs inherited);
@@ -113,8 +125,9 @@ stack checks, first-boot task, per-machine state removed), sysprep → the model
    An image whose verification fails is not uploaded; the job fails and its logs (serial console of
    the test boot, screenshots, reports) are kept as the run's artifact.
 
-**Not verified by the build** (no hardware): the GPU path (the VM has no GPU, so the model runs on the
-CPU; check `Vulkan0` in the llama-server log on the first laptop of each model), Windows activation
+**Not verified by the build** (no hardware): the GPU path (the VM has no GPU and, on Windows, no Vulkan
+loader, so llama.cpp skips its Vulkan backend and runs the model on the CPU backend; the report lists the
+backends it loaded; check `Vulkan0` in the llama-server log on the first laptop of each model), Windows activation
 with the laptop's firmware key (the VM has no OA3 key), Secure Boot for the Windows image (the VM
 boots without it), and loading the non-default models (size + sha256 only).
 
@@ -141,9 +154,11 @@ under 10,000 parts).
   base/linux/<tag>/...           base/windows/<tag>/...        staged base releases
   linux/<linux tag>/zero-<tier>-linux.img.zst  .manifest.json  .verify.txt
   windows/<windows tag>/zero-<tier>-windows.img.zst  .manifest.json  .verify.txt
+  windows/<windows tag>/zero-<tier>-windows-asus-rog-flow-z13.img.zst  .manifest.json  .verify.txt
 ```
 
 The manifest holds the raw size and sha256 (to check the written NVMe), the compressed size and
-sha256 (to check the download), the store endpoint and key, the base release, the golden commit, the
-catalog version, the model list and the verification report. Downloads are by presigned URL, made on
+sha256 (to check the download), the store endpoint and key, the image file name, the laptop
+(`windows/drivers.json` target), the base release, the golden commit, the catalog version, the model
+list and the verification report. Downloads are by presigned URL, made on
 request.

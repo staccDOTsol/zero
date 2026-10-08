@@ -50,7 +50,7 @@ downloaded on the laptop, and the default model is already being served on 127.0
 boot.
 
 What a distributor receives is one **golden image per tier and OS**, six in all (Pro, Max, Ultra x
-Linux, Windows). Each is a single raw GPT disk image (`zero-<tier>-<os>.img.zst`, zstd-compressed)
+Linux, Windows), plus one Windows image per additional laptop of a tier (below). Each is a single raw GPT disk image (`zero-<tier>-<os>.img.zst`, zstd-compressed)
 that the imaging team writes straight onto the laptop's NVMe (`zstd -dc | dd`, or any sector-copy
 duplicator). Nothing has to be assembled or added by hand. On the first boot:
 
@@ -72,6 +72,26 @@ version).
 
 `provision/` (adding models to a disk or image by hand) is what the golden builds use for Linux and
 remains for service work, e.g. putting a different default on one laptop.
+
+## Laptops
+
+| Tier | Laptop | Silicon | Status |
+|---|---|---|---|
+| Zero Pro | HP ZBook Ultra G1a, 64 GB / 1 TB | AMD Ryzen AI Max+ 395 (Strix Halo), Radeon 8060S | shipping |
+| Zero Max | HP ZBook Ultra G1a, 128 GB / 2 TB | same | shipping |
+| Zero Pro | ASUS ROG Flow Z13 (2025) GZ302EA, 64 GB / 1 TB | same silicon as the ZBook | **untested on hardware** |
+| Zero Max | ASUS ROG Flow Z13 (2025) GZ302EA-XS99, 128 GB / 2 TB (NVMe upgraded) | same | **untested on hardware** |
+| Zero Ultra | Lenovo ThinkPad P16 Gen 3, 128 GB / 2 TB | Intel Core Ultra 9 275HX + NVIDIA RTX PRO 5000 Blackwell 24 GB | shipping |
+
+The HP ZBook Ultra G1a is each Pro/Max tier's default laptop. The ASUS ROG Flow Z13 (2025) is a second
+Pro/Max laptop with the same Strix Halo silicon: the **Linux image is the same file** for both (one image
+for all laptops; the Strix Halo GPU-memory tuning is sized from installed RAM, not from the model), while
+**Windows gets its own ISO and golden image** (`windows/drivers.json` target `asus-rog-flow-z13-gz302ea`:
+ASUS's per-device driver packages instead of HP's driver pack; `zero-<tier>-windows-asus-rog-flow-z13.img.zst`,
+built with `golden/build-golden.sh --os windows --laptop asus-rog-flow-z13-gz302ea`). Everything about the
+Z13 has been built and checked only in software (driver packages pinned by sha256 from ASUS's servers, INFs
+inspected; the Windows image goes through the same QEMU first-boot verification as the HP one); nothing has
+been run on a Z13 yet.
 
 ## Layout
 
