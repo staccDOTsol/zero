@@ -2,8 +2,9 @@
   Zero golden image, TEST ONLY: runs inside a throwaway copy-on-write overlay of the finished image
   booted in QEMU (golden/windows/build.sh, step "verify"). The build host adds one line at the hook
   point of the overlay's copy of golden/windows/firstboot.ps1, which the image's own startup task
-  (\Zero\Zero golden first boot) runs, and that line starts this file from C:\zero-verify\ as its own
-  process; nothing of it is in the image.
+  (\Zero\Zero golden first boot) runs, and that line starts this file from C:\zero-verify\ (run.ps1) as its
+  own process, and again at each startup until a run finishes (Windows Welcome may restart after installing
+  updates); nothing of it is in the image.
 
   The overlay disk is the size of the laptop's NVMe (1 TB Pro, 2 TB Max/Ultra), larger than the image,
   exactly as when an imaging team writes the image onto the drive. This is the image's FIRST boot:
@@ -63,6 +64,10 @@ function Tail([string]$Path, [int]$N = 40) { if (Test-Path -LiteralPath $Path) {
 function Get-LlamaTasks { ([regex]::Matches((Tail (Join-Path $logs 'lecore-llama.out.log') 20000), 'launch_slot_')).Count }
 
 Out-Line 'ZERO_VERIFY_STARTED'
+$runFile = Join-Path $here 'runs'
+$run = 1 + [int](Get-Content -LiteralPath $runFile -ErrorAction SilentlyContinue)
+Set-Content -LiteralPath $runFile $run
+if ($run -gt 1) { Info 'verify run' "run $run; an earlier run was ended by a restart (Windows Welcome restarts after installing updates when it has a network)" }
 try {
     $os = Get-CimInstance Win32_OperatingSystem
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
@@ -250,6 +255,7 @@ try {
 $res = if ($script:Fail -eq 0 -and $script:Pass -gt 0) { 'PASS' } else { 'FAIL' }
 Out-Line ("ZERO_VERIFY_RESULT: {0} pass={1} fail={2}" -f $res, $script:Pass, $script:Fail)
 foreach ($l in 'lecore-llama.out.log', 'lecore-chat.out.log', 'golden-firstboot.log') { Out-Line "---- $l"; Out-Line (Tail (Join-Path $logs $l) 25) }
+New-Item -ItemType File -Force -Path (Join-Path $here 'done') | Out-Null
 Out-Line 'ZERO_VERIFY_DONE'
 Start-Sleep -Seconds 5
 & shutdown.exe /s /t 5 /f /c 'zero golden verify done'

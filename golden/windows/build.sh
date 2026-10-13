@@ -354,6 +354,13 @@ VERIFY=PASS
 OV=$WORK/verify.qcow2
 VS=$WORK/verify-stage; rm -rf "$VS"; mkdir -p "$VS/zero-verify"
 cp "$HERE/verify.ps1" "$VS/zero-verify/"
+# run.ps1 starts verify.ps1 until a run finishes: Windows Welcome (OOBE) installs updates over the VM's network
+# and restarts on its own, which ends the first run; a startup task (registered by the hook below) runs it again.
+cat > "$VS/zero-verify/run.ps1" <<'RUN'
+# ZERO GOLDEN TEST ONLY (throwaway verification overlay, not in the image)
+if (Test-Path -LiteralPath 'C:\zero-verify\done') { exit 0 }
+& 'C:\zero-verify\verify.ps1' *>> 'C:\zero-verify\verify.log'
+RUN
 python3 - "$REPO/golden/lib/catalog.py" "$CATALOG" "$TIER" "$TARGET" "$VENDOR" "$NVME_BYTES" "$DISK_BYTES" "$VS/zero-verify/expect.json" <<'PY'
 import json, subprocess, sys
 tool, cat, tier, target, vendor, nvme, img, out = sys.argv[1:9]
@@ -367,8 +374,9 @@ json.dump({"tier": tier, "target": target, "display_vendor": vendor, "disk_bytes
           open(out, "w"), indent=1)
 PY
 # The test hook, in the overlay only: one line at the hook point of the image's own first-boot script,
-# which the \Zero\Zero golden first boot task runs at startup (during OOBE). It starts verify.ps1 as a
-# separate process (WMI Win32_Process.Create, so it is not part of the task's job object).
+# which the \Zero\Zero golden first boot task runs at startup (during OOBE). It starts run.ps1 (verify.ps1) as a
+# separate process (WMI Win32_Process.Create, so it is not part of the task's job object), and registers a
+# startup task that runs it again after a restart, until a run has finished.
 FB="Program Files/leCore+/golden/firstboot.ps1"
 attach; ntfs-3g -o ro "$WINPART" "$MNT"
 cp "$MNT/$FB" "$VS/firstboot.ps1"
@@ -382,8 +390,10 @@ if mark not in t:
     sys.exit("firstboot.ps1 in the image has no test hook point")
 hook = ("# ZERO GOLDEN TEST ONLY (added to a throwaway overlay by golden/windows/build.sh, not in the image)\r\n"
         "if (-not $InSpecialize -and -not (Test-Path 'C:\\zero-verify\\started')) { New-Item -ItemType File 'C:\\zero-verify\\started' | Out-Null; "
+        "schtasks.exe /Create /F /TN ZeroGoldenVerify /SC ONSTART /RU SYSTEM /RL HIGHEST "
+        "/TR 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\zero-verify\\run.ps1' | Out-Null; "
         "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "
-        "'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& C:\\zero-verify\\verify.ps1 *> C:\\zero-verify\\verify.log\"' } | Out-Null }")
+        "'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\zero-verify\\run.ps1' } | Out-Null }")
 open(p, "w", encoding="utf-8", newline="").write(t.replace(mark, hook))
 PY
 overlay() { # a fresh copy-on-write overlay of the image, the size of the laptop's NVMe, with the test hook
@@ -400,7 +410,7 @@ else
   apt-get install -y -qq libguestfs-tools >/dev/null 2>&1 || true
   chmod 0644 /boot/vmlinuz-* 2>/dev/null || true
   P3=$(guestfish --ro -a "$OV" run : list-filesystems | awk -F: '/ntfs/{print $1}' | tail -n 1)
-  guestfish --rw -a "$OV" run : mount "$P3" / : mkdir-p /zero-verify : copy-in "$VS/zero-verify/verify.ps1" "$VS/zero-verify/expect.json" /zero-verify \
+  guestfish --rw -a "$OV" run : mount "$P3" / : mkdir-p /zero-verify : copy-in "$VS/zero-verify/verify.ps1" "$VS/zero-verify/expect.json" "$VS/zero-verify/run.ps1" /zero-verify \
     : upload "$VS/firstboot.ps1" "/$FB" : umount-all
 fi
 }
