@@ -153,12 +153,23 @@ if (-not $InSpecialize) {
 
 # 6. the Zero services are running ---------------------------------------------------------------------------
 if (-not $InSpecialize) {
+    # SetupComplete.cmd may still be reinstalling the services on this boot (StopPending, or briefly missing /
+    # not openable between remove and install): wait for them to settle and retry, up to 5 minutes each
     foreach ($id in 'lecore-llama', 'lecore-chat') {
-        $svc = Get-Service -Name $id -ErrorAction SilentlyContinue
-        if (-not $svc) { $ok = $false; Say "service $id is missing"; continue }
-        if ($svc.Status -ne 'Running') {
-            Say "service $id is $($svc.Status); starting it"
-            try { Start-Service -Name $id; Say "service $id started" } catch { $ok = $false; Say "starting $id failed: $($_.Exception.Message)" }
+        $deadline = (Get-Date).AddMinutes(5); $last = ''
+        while ($true) {
+            $svc = Get-Service -Name $id -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq 'Running') { if ($last) { Say "service $id started" }; break }
+            if ((Get-Date) -ge $deadline) {
+                $ok = $false
+                Say ("service {0} not running after 5 minutes: {1}" -f $id, $(if ($svc) { $svc.Status } else { 'missing' }) + $(if ($last) { "; last error: $last" } else { '' }))
+                break
+            }
+            if ($svc -and $svc.Status -eq 'Stopped') {
+                Say "service $id is Stopped; starting it"
+                try { Start-Service -Name $id -ErrorAction Stop; $last = 'start requested' } catch { $last = $_.Exception.Message }
+            } elseif (-not $last) { $last = $(if ($svc) { "$($svc.Status)" } else { 'missing' }) }
+            Start-Sleep -Seconds 10
         }
     }
 }
